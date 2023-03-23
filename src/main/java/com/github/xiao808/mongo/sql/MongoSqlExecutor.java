@@ -3,22 +3,14 @@ package com.github.xiao808.mongo.sql;
 import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLStatement;
-import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
-import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
-import com.alibaba.druid.sql.ast.statement.SQLSelect;
-import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
-import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.alibaba.druid.sql.parser.SQLParserFeature;
 import com.alibaba.druid.util.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.github.xiao808.mongo.sql.execution.SqlExecution;
-import com.github.xiao808.mongo.sql.visitor.SqlTransformFromMysqlToMongoVisitor;
-import com.github.xiao808.mongo.sql.visitor.SqlTransformToMongoVisitor;
 import com.mongodb.client.MongoDatabase;
-import com.mongodb.client.internal.MongoDatabaseImpl;
-import org.bson.Document;
 
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * @author zengxiao
@@ -28,27 +20,24 @@ import java.util.Objects;
  **/
 public final class MongoSqlExecutor {
 
-    private final SqlTransformToMongoVisitor transformVisitor;
-
     /**
      * transform and execute sql.
-     *
+     * <p>
      * usage:
      * new MongoSqlExecutor("select * ...",
-     *                  new SqlTransformFromMysqlToMongoVisitor(),
-     *                  true,
-     *                  2000
-     *              )
-     *              .execute(mongoDatabase);
-     *
+     * DbType.mysql,
+     * true,
+     * 2000
+     * )
+     * .execute(mongoDatabase);
      *
      * @param sql                     sql to parse
-     * @param sqlTransformVisitor     sql transform visitor
+     * @param dbType                  database type
      * @param aggregationAllowDiskUse set whether disk use is allowed during aggregation
      * @param aggregationBatchSize    set the batch size for aggregation
      */
     private MongoSqlExecutor(final String sql,
-                             final SqlTransformToMongoVisitor sqlTransformVisitor,
+                             final DbType dbType,
                              final boolean aggregationAllowDiskUse,
                              final int aggregationBatchSize) {
         // empty sql is not permitted.
@@ -60,18 +49,15 @@ public final class MongoSqlExecutor {
         if (actualAggregationBatchSize < 0) {
             actualAggregationBatchSize = 1000;
         }
+        DbType type = Optional.ofNullable(dbType).orElse(DbType.mysql);
         // use druid parse sql in special database sql type.
         // not support multi statement.
-        SQLStatement sqlStatement = SQLUtils.parseSingleStatement(sql, DbType.of(sqlTransformVisitor.getSrcDbType()), SQLParserFeature.PrintSQLWhileParsingFailed, SQLParserFeature.IgnoreNameQuotes);
-        // sql transformer actually.
-        this.transformVisitor = Objects.requireNonNullElseGet(sqlTransformVisitor, SqlTransformFromMysqlToMongoVisitor::new);
+        SQLStatement sqlStatement = SQLUtils.parseSingleStatement(sql, type, SQLParserFeature.PrintSQLWhileParsingFailed, SQLParserFeature.IgnoreNameQuotes);
         // initialize context for current execution.
         MongoContext context = MongoContext.builder()
                 .sqlStatement(sqlStatement)
                 .aggregationBatchSize(actualAggregationBatchSize)
                 .aggregationAllowDiskUse(aggregationAllowDiskUse)
-                .condition(new Document())
-                .selectColumn(new Document())
                 .build();
         InheritableThreadLocalMongoContextHolder.setContext(context);
     }
@@ -79,7 +65,6 @@ public final class MongoSqlExecutor {
     public JsonNode execute(MongoDatabase mongoDatabase) {
         // get sql execution
         SqlExecution execution = SqlExecution.getInstance();
-        execution.accept(transformVisitor);
         // communicate with mongodb and gain the result.
         return execution.execute(mongoDatabase);
     }
@@ -132,13 +117,34 @@ public final class MongoSqlExecutor {
                 "\tgroup by\n" +
                 "\t\tquestionid) b on\n" +
                 "\ta.questionid = b.questionid";
-        MongoSqlExecutor executor = new Builder()
+        new Builder()
                 .sql(select)
+                .dbType(DbType.mysql)
                 .aggregationAllowDiskUse(true)
                 .aggregationBatchSize(2000)
-                .sqlTransformVisitor(new SqlTransformFromMysqlToMongoVisitor())
-                .build();
-        JsonNode execute = executor.execute(null);
+                .build()
+                .execute(null);
+        String update = "update table student set seat_no = 1 where id = 1";
+        new Builder()
+                .sql(update)
+                .dbType(DbType.mysql)
+                .aggregationAllowDiskUse(true)
+                .aggregationBatchSize(2000)
+                .build().execute(null);
+        String insert = "insert into exam (id, name, age) values (1, 1, 1), (2, 2, 2)";
+        new Builder()
+                .sql(insert)
+                .dbType(DbType.mysql)
+                .aggregationAllowDiskUse(true)
+                .aggregationBatchSize(2000)
+                .build().execute(null);
+        String delete = "delete from exam where id = 1 and age = 1";
+        new Builder()
+                .sql(delete)
+                .dbType(DbType.mysql)
+                .aggregationAllowDiskUse(true)
+                .aggregationBatchSize(2000)
+                .build().execute(null);
     }
 
     /**
@@ -162,9 +168,9 @@ public final class MongoSqlExecutor {
         private String sql;
 
         /**
-         * sql transform visitor
+         * database type
          */
-        private SqlTransformToMongoVisitor sqlTransformVisitor;
+        private DbType dbType;
 
         /**
          * set the sql string.
@@ -179,13 +185,13 @@ public final class MongoSqlExecutor {
         }
 
         /**
-         * set the sql transform visitor.
+         * set the database type.
          *
-         * @param sqlTransformVisitor the sql transform visitor
+         * @param dbType database type
          * @return the builder
          */
-        public Builder sqlTransformVisitor(final SqlTransformToMongoVisitor sqlTransformVisitor) {
-            this.sqlTransformVisitor = sqlTransformVisitor;
+        public Builder dbType(final DbType dbType) {
+            this.dbType = dbType;
             return this;
         }
 
@@ -219,7 +225,7 @@ public final class MongoSqlExecutor {
          * @return the {@link MongoSqlExecutor}
          */
         public MongoSqlExecutor build() {
-            return new MongoSqlExecutor(sql, sqlTransformVisitor, aggregationAllowDiskUse, aggregationBatchSize);
+            return new MongoSqlExecutor(sql, dbType, aggregationAllowDiskUse, aggregationBatchSize);
         }
     }
 }

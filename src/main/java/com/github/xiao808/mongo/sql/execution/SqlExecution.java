@@ -8,11 +8,9 @@ import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.github.xiao808.mongo.sql.InheritableThreadLocalMongoContextHolder;
 import com.github.xiao808.mongo.sql.MongoContext;
-import com.github.xiao808.mongo.sql.visitor.SqlTransformToMongoVisitor;
 import com.mongodb.client.MongoDatabase;
 
 import java.util.Objects;
-import java.util.function.Consumer;
 
 /**
  * @author zengxiao
@@ -20,7 +18,7 @@ import java.util.function.Consumer;
  * @date 2023/3/22 15:45
  * @since 1.0
  **/
-public interface SqlExecution extends Consumer<SqlTransformToMongoVisitor> {
+public interface SqlExecution {
 
     /**
      * sql execution factory
@@ -53,5 +51,11 @@ public interface SqlExecution extends Consumer<SqlTransformToMongoVisitor> {
         throw new IllegalArgumentException("illegal mongo context for execution.");
     }
 
+    /**
+     * transform sql and execute
+     *
+     * @param mongoDatabase mongo database
+     * @return execute result
+     */
     JsonNode execute(MongoDatabase mongoDatabase);
 }

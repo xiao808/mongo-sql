@@ -3,7 +3,6 @@ package com.github.xiao808.mongo.sql;
 import com.alibaba.druid.sql.ast.SQLStatement;
 import lombok.Builder;
 import lombok.Getter;
-import org.bson.Document;
 
 /**
  * @author zengxiao
@@ -29,14 +28,4 @@ public class MongoContext {
      * SQLStatement using druid SQLStatementParser.
      */
     private SQLStatement sqlStatement;
-
-    /**
-     * query、insert、update、delete condition
-     */
-    private Document condition;
-
-    /**
-     * column to select
-     */
-    private Document selectColumn;
 }
