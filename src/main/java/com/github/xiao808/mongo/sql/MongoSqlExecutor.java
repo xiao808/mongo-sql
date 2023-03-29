@@ -70,53 +70,7 @@ public final class MongoSqlExecutor {
     }
 
     public static void main(String[] args) {
-        String select = "select\n" +
-                "\ta.questionid,\n" +
-                "\ta.questioncontent,\n" +
-                "\ta.rightoptnum,\n" +
-                "\ta.rightoptid,\n" +
-                "\tb.stuoptnum,\n" +
-                "\tb.stuoptionid\n" +
-                "from \n" +
-                "\t\t (\n" +
-                "\tselect\n" +
-                "\t\ttq1.questionid,\n" +
-                "\t\ttq1.questioncontent,\n" +
-                "\t\tGROUP_CONCAT(teod1.optionnum order by teod1.optionnum separator '') as rightoptnum ,\n" +
-                "\t\tteod1.optionid as rightoptid\n" +
-                "\tfrom\n" +
-                "\t\ttbexamquestion tq1 ,\n" +
-                "\t\ttbexamoptionandanswer teod1,\n" +
-                "\t\ttbexampaperquestion tepq1,\n" +
-                "\t\ttbexamandpaper teap1\n" +
-                "\twhere\n" +
-                "\t\ttq1.questionid = teod1.questionid\n" +
-                "\t\tand teod1.isanswer = 1\n" +
-                "\t\tand tq1.questionid = tepq1.questionid\n" +
-                "\t\tand tepq1.paperid = teap1.paperid\n" +
-                "\t\tand teap1.examid = 1110\n" +
-                "\tgroup by\n" +
-                "\t\tquestionid) a\n" +
-                "left join \n" +
-                "\t\t  (\n" +
-                "\tselect\n" +
-                "\t\ttq.questionid,\n" +
-                "\t\ttepa.userid,\n" +
-                "\t\tGROUP_CONCAT(teod.optionnum order by teod.optionnum separator '') as stuoptnum,\n" +
-                "\t\tteod.optionid as stuoptionid\n" +
-                "\tfrom\n" +
-                "\t\ttbexampaperanswer tepa,\n" +
-                "\t\ttbexamquestion tq ,\n" +
-                "\t\ttbexamoptionandanswer teod\n" +
-                "\twhere\n" +
-                "\t\ttepa.questionid = tq.questionid\n" +
-                "\t\tand tepa.optionid = teod.optionid\n" +
-                "\t\tand tq.questionid = teod.questionid\n" +
-                "\t\tand tepa.examid = 1110\n" +
-                "\t\tand tepa.userid = 123\n" +
-                "\tgroup by\n" +
-                "\t\tquestionid) b on\n" +
-                "\ta.questionid = b.questionid";
+        String select = "select distinct(e.id), s.id, count(*) as cn from (select * from student where exam_id = 1) s left join exam e on s.exam_id = e.id where e.id is not null and name not like '%123%' group by e.id, s.id order by cn desc limit 10, 10";
         new Builder()
                 .sql(select)
                 .dbType(DbType.mysql)
@@ -124,7 +78,7 @@ public final class MongoSqlExecutor {
                 .aggregationBatchSize(2000)
                 .build()
                 .execute(null);
-        String update = "update table student set seat_no = 1 where id = 1";
+        String update = "update student set seat_no = 1, name = 1 where id = 1";
         new Builder()
                 .sql(update)
                 .dbType(DbType.mysql)

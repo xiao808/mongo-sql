@@ -1,19 +1,11 @@
 package com.github.xiao808.mongo.sql.execution;
 
-import com.alibaba.druid.sql.ast.SQLExpr;
-import com.alibaba.druid.sql.ast.SQLOrderBy;
-import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
-import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
-import com.alibaba.druid.sql.ast.statement.SQLSelect;
-import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
-import com.alibaba.druid.sql.ast.statement.SQLSelectOrderByItem;
-import com.alibaba.druid.sql.ast.statement.SQLSelectQuery;
-import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
 import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
-import com.alibaba.druid.sql.ast.statement.SQLWithSubqueryClause;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.github.xiao808.mongo.sql.InheritableThreadLocalMongoContextHolder;
 import com.github.xiao808.mongo.sql.MongoContext;
+import com.github.xiao808.mongo.sql.ParseException;
+import com.github.xiao808.mongo.sql.QueryConverter;
 import com.mongodb.client.MongoDatabase;
 
 /**
@@ -28,51 +20,18 @@ public class SqlSelectExecution implements SqlExecution {
     public JsonNode execute(MongoDatabase mongoDatabase) {
         MongoContext mongoContext = InheritableThreadLocalMongoContextHolder.getContext();
         SQLSelectStatement sqlStatement = (SQLSelectStatement) mongoContext.getSqlStatement();
-        SQLSelect select = sqlStatement.getSelect();
-        SQLWithSubqueryClause with = select.getWithSubQuery();
-        if (with != null) {
+        System.err.println("select.......................");
+        String select = "select e.id, s.id, count(*) as cn from (select * from student where exam_id = 1) s left join exam e on s.exam_id = e.id where e.id is null and s.name not like '%123%' group by e.id, s.id order by cn desc limit 10, 10";
+        try {
+            QueryConverter build = new QueryConverter.Builder().aggregationAllowDiskUse(true)
+                    .aggregationBatchSize(2000)
+                    .sql(select)
+                    .build();
+            System.err.println(build.getQueryAsDocument().toJson());
+        } catch (ParseException e) {
+            e.printStackTrace();
         }
 
-        SQLSelectQuery query = select.getQuery();
-        if (query != null) {
-            if (query instanceof SQLSelectQueryBlock) {
-            } else {
-            }
-        }
-
-        SQLSelectQueryBlock queryBlock = select.getFirstQueryBlock();
-
-        SQLOrderBy orderBy = select.getOrderBy();
-        if (orderBy != null) {
-            for (SQLSelectOrderByItem orderByItem : orderBy.getItems()) {
-                SQLExpr orderByItemExpr = orderByItem.getExpr();
-
-                if (orderByItemExpr instanceof SQLIdentifierExpr) {
-                    SQLIdentifierExpr orderByItemIdentExpr = (SQLIdentifierExpr) orderByItemExpr;
-                    long hash = orderByItemIdentExpr.nameHashCode64();
-
-                    SQLSelectItem selectItem = null;
-                    if (queryBlock != null) {
-                        selectItem = queryBlock.findSelectItem(hash);
-                    }
-
-                    if (selectItem != null) {
-                        orderByItem.setResolvedSelectItem(selectItem);
-
-                        SQLExpr selectItemExpr = selectItem.getExpr();
-                        if (selectItemExpr instanceof SQLIdentifierExpr) {
-                            orderByItemIdentExpr.setResolvedTableSource(((SQLIdentifierExpr) selectItemExpr).getResolvedTableSource());
-                            orderByItemIdentExpr.setResolvedColumn(((SQLIdentifierExpr) selectItemExpr).getResolvedColumn());
-                        } else if (selectItemExpr instanceof SQLPropertyExpr) {
-                            orderByItemIdentExpr.setResolvedTableSource(((SQLPropertyExpr) selectItemExpr).getResolvedTableSource());
-                            orderByItemIdentExpr.setResolvedColumn(((SQLPropertyExpr) selectItemExpr).getResolvedColumn());
-                        }
-                        continue;
-                    }
-                }
-
-            }
-        }
         return null;
     }
 }
