@@ -1,11 +1,10 @@
 package com.github.xiao808.mongo.sql.holder.from;
 
-import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
-import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
 import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
+import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
 import com.alibaba.druid.sql.ast.statement.SQLJoinTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLSelect;
 import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
@@ -17,11 +16,8 @@ import com.alibaba.druid.sql.ast.statement.SQLTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLUnionQuery;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateSetItem;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
-import com.alibaba.druid.sql.parser.SQLParserUtils;
-import com.alibaba.druid.util.DruidDataSourceUtils;
 import com.github.xiao808.mongo.sql.FieldType;
 import com.github.xiao808.mongo.sql.ParseException;
-import com.github.xiao808.mongo.sql.SQLCommandType;
 import com.github.xiao808.mongo.sql.holder.AliasHolder;
 import com.github.xiao808.mongo.sql.utils.SqlUtils;
 import com.github.xiao808.mongo.sql.visitor.ExpVisitorEraseAliasTableBaseBuilder;
@@ -31,12 +27,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Implementation of {@link SQLInfoHolder} to hold information about the sql query and it's structure.
  */
 public final class SQLCommandInfoHolder implements SQLInfoHolder {
-    private final SQLCommandType sqlCommandType;
     private final boolean isDistinct;
     private final boolean isCountAll;
     private final boolean isTotalGroup;
@@ -51,10 +47,10 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
     private final AliasHolder aliasHolder;
     private final SQLExpr havingClause;
     private final List<SQLUpdateSetItem> updateSets;
-
+    private List<SQLInsertStatement.ValuesClause> valuesClauseList;
+    private List<String> insertColumns;
 
     private SQLCommandInfoHolder(final Builder builder) {
-        this.sqlCommandType = builder.sqlCommandType;
         this.whereClause = builder.whereClause;
         this.isDistinct = builder.isDistinct;
         this.isCountAll = builder.isCountAll;
@@ -69,6 +65,8 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
         this.orderByElements = builder.orderByElements;
         this.aliasHolder = builder.aliasHolder;
         this.updateSets = builder.updateSets;
+        this.valuesClauseList = builder.valuesClauseList;
+        this.insertColumns = builder.insertColumns;
     }
 
     @Override
@@ -78,6 +76,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get if distinct was used in the sql query.
+     *
      * @return true if distinct
      */
     public boolean isDistinct() {
@@ -86,6 +85,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * true if count(*) is used.
+     *
      * @return true if count(*) is used
      */
     public boolean isCountAll() {
@@ -94,6 +94,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * Will return true if any of the {@link SQLSelectItem}s has a function that justifies aggregation like max().
+     *
      * @return true if any of the {@link SQLSelectItem}s has a function that justifies aggregation like max()
      */
     public boolean isTotalGroup() {
@@ -102,6 +103,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the base table name from this query.
+     *
      * @return the base table name
      */
     public String getTable() {
@@ -110,6 +112,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the {@link FromHolder} that holds information about the from information in the query.
+     *
      * @return the {@link FromHolder}
      */
     public FromHolder getFromHolder() {
@@ -118,6 +121,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the limit used in the sql query.
+     *
      * @return the limit
      */
     public long getLimit() {
@@ -126,6 +130,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the offset from the sql query.
+     *
      * @return the offset from the sql query
      */
     public long getOffset() {
@@ -134,6 +139,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the where clause from the query.
+     *
      * @return the where clause
      */
     public SQLExpr getWhereClause() {
@@ -142,6 +148,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the select items from the query.
+     *
      * @return the select items from the query
      */
     public List<SQLSelectItem> getSelectItems() {
@@ -150,6 +157,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the joins from the query.
+     *
      * @return the joins from the query
      */
     public List<SQLTableSource> getJoins() {
@@ -158,6 +166,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the groupbys from the query.
+     *
      * @return the groupbys
      */
     public List<String> getGroupBys() {
@@ -166,6 +175,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the having clause from the sql query.
+     *
      * @return the having clause from the sql query
      */
     public SQLExpr getHavingClause() {
@@ -174,6 +184,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the order by elements from the query.
+     *
      * @return the order by elements
      */
     public List<SQLSelectOrderByItem> getOrderByElements() {
@@ -181,15 +192,8 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
     }
 
     /**
-     * Get the {@link SQLCommandType} for this query.
-     * @return the {@link SQLCommandType}
-     */
-    public SQLCommandType getSqlCommandType() {
-        return sqlCommandType;
-    }
-
-    /**
      * Get the {@link AliasHolder} for this query.
+     *
      * @return the alias holder
      */
     public AliasHolder getAliasHolder() {
@@ -198,10 +202,29 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
     /**
      * get the update sets used for updates.
+     *
      * @return the update sets
      */
     public List<SQLUpdateSetItem> getUpdateSets() {
         return updateSets;
+    }
+
+    /**
+     * values clause for insert
+     *
+     * @return values clause
+     */
+    public List<SQLInsertStatement.ValuesClause> getValuesClauseList() {
+        return valuesClauseList;
+    }
+
+    /**
+     * columns of insert.
+     *
+     * @return columns of insert
+     */
+    public List<String> getInsertColumns() {
+        return insertColumns;
     }
 
     /**
@@ -210,7 +233,6 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
     public static final class Builder {
         private final FieldType defaultFieldType;
         private final Map<String, FieldType> fieldNameToFieldTypeMapping;
-        private SQLCommandType sqlCommandType;
         private SQLExpr whereClause;
         private List<SQLUpdateSetItem> updateSets = new ArrayList<>();
         private boolean isDistinct = false;
@@ -225,6 +247,9 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
         private SQLExpr havingClause;
         private List<SQLSelectOrderByItem> orderByElements = new ArrayList<>();
         private AliasHolder aliasHolder;
+        private List<SQLInsertStatement.ValuesClause> valuesClauseList = new ArrayList<>();
+        private List<String> insertColumns = new ArrayList<>();
+
 
         private Builder(final FieldType defaultFieldType, final Map<String, FieldType> fieldNameToFieldTypeMapping) {
             this.defaultFieldType = defaultFieldType;
@@ -254,17 +279,17 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
         /**
          * Set the select or delete statement from the parsed sql string.
+         *
          * @param statement the {@link com.alibaba.druid.sql.ast.SQLStatement}
          * @return the builder
          * @throws ParseException if there is an issue
-         * the parsing the sql
+         *                        the parsing the sql
          * @throws ParseException if there is an issue the parsing the sql
          */
-        public Builder setStatement(final SQLStatement statement)
+        public Builder initSqlStatement(final SQLStatement statement)
                 throws ParseException {
 
             if (statement instanceof SQLSelectStatement) {
-                sqlCommandType = SQLCommandType.SELECT;
                 SQLSelect selectBody = ((SQLSelectStatement) statement).getSelect();
                 SQLSelectQuery query = selectBody.getQuery();
                 if (query instanceof SQLUnionQuery) {
@@ -282,11 +307,11 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
                 throw new ParseException("No supported sentence");
             } else if (statement instanceof SQLDeleteStatement) {
-                sqlCommandType = SQLCommandType.DELETE;
                 return setDelete((SQLDeleteStatement) statement);
             } else if (statement instanceof SQLUpdateStatement) {
-                sqlCommandType = SQLCommandType.UPDATE;
                 return setUpdate((SQLUpdateStatement) statement);
+            } else if (statement instanceof SQLInsertStatement) {
+                return setInsert((SQLInsertStatement) statement);
             } else {
                 throw new ParseException("No supported sentence");
             }
@@ -294,29 +319,53 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
         /**
          * Set the update information for this query if it is a update query.
+         *
          * @param update the {@link SQLUpdateStatement} object
          * @return the builder
          * @throws ParseException if there is an issue
-         * parsing the sql
-         * @throws ParseException if there is an issue parsing the sql
+         *                        parsing the sql
          */
         public Builder setUpdate(final SQLUpdateStatement update)
                 throws ParseException {
-            SqlUtils.isTrue(update.getFrom() != null,
+            SqlUtils.isTrue(update.getTableSource() != null,
                     "there must be a table specified for update");
             from = generateFromHolder(new FromHolder(this.defaultFieldType,
-                    this.fieldNameToFieldTypeMapping), update.getFrom(), null);
+                    this.fieldNameToFieldTypeMapping), update.getTableSource(), null);
             whereClause = update.getWhere();
             updateSets.addAll(update.getItems());
             return this;
         }
 
         /**
+         * Set the insert information for this query.
+         *
+         * @param insert the {@link SQLInsertStatement} object
+         * @return the builder
+         * @throws ParseException if there is an issue
+         *                        parsing the sql
+         */
+        public Builder setInsert(final SQLInsertStatement insert) throws ParseException {
+            SqlUtils.isTrue(insert.getTableSource() != null,
+                    "there must be a table specified for update");
+            from = generateFromHolder(new FromHolder(this.defaultFieldType,
+                    this.fieldNameToFieldTypeMapping), insert.getTableSource(), null);
+            List<SQLExpr> columns = insert.getColumns();
+            SqlUtils.isTrue(columns != null && !columns.isEmpty(), "there must be columns specified for insert");
+            insertColumns = columns.stream().map(SqlUtils::getColumnNameFromColumn).collect(Collectors.toList());
+            valuesClauseList = insert.getValuesList();
+            SqlUtils.isTrue(valuesClauseList != null && !valuesClauseList.isEmpty(), "there must be at least one values clause for insert");
+            boolean match = valuesClauseList.stream().noneMatch(valuesClause -> valuesClause.getValues().size() != columns.size());
+            SqlUtils.isTrue(match, "each size of value clause must match column`s size for insert");
+            return this;
+        }
+
+        /**
          * Set the select query information for this query.
+         *
          * @param plainSelect the {@link SQLSelect}
          * @return the builder
          * @throws ParseException if there is an issue
-         * the parsing the sql
+         *                        the parsing the sql
          * @throws ParseException if there is an issue the parsing the sql
          */
         public Builder setPlainSelect(final SQLSelectQueryBlock plainSelect)
@@ -333,7 +382,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
             List<SQLTableSource> joinTables = new ArrayList<>();
             if (from instanceof SQLJoinTableSource) {
                 joinTables.add(from);
-                from = ((SQLJoinTableSource)from).getLeft();
+                from = ((SQLJoinTableSource) from).getLeft();
             }
             this.from = generateFromHolder(new FromHolder(this.defaultFieldType,
                     this.fieldNameToFieldTypeMapping), from, joinTables);
@@ -357,16 +406,17 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
         /**
          * Set the delete information for this query if it is a delete query.
+         *
          * @param delete the {@link SQLDeleteStatement} object
          * @return the builder
          * @throws ParseException if there is an issue
-         * parsing the sql
+         *                        parsing the sql
          * @throws ParseException if there is an issue parsing the sql
          */
         public Builder setDelete(final SQLDeleteStatement delete) throws ParseException {
             SqlUtils.isTrue(delete.getFrom() == null, "there should only be on table specified for deletes");
             from = generateFromHolder(new FromHolder(this.defaultFieldType,
-                    this.fieldNameToFieldTypeMapping), delete.getFrom(), null);
+                    this.fieldNameToFieldTypeMapping), delete.getTableSource(), null);
             whereClause = delete.getWhere();
             return this;
         }
@@ -392,6 +442,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
         /**
          * Build a {@link SQLCommandInfoHolder}.
+         *
          * @return the {@link SQLCommandInfoHolder}
          */
         public SQLCommandInfoHolder build() {
@@ -400,7 +451,8 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
 
         /**
          * create a {@link Builder}.
-         * @param defaultFieldType the default {@link FieldType}
+         *
+         * @param defaultFieldType            the default {@link FieldType}
          * @param fieldNameToFieldTypeMapping the field name to {@link FieldType} map
          * @return the builder
          */

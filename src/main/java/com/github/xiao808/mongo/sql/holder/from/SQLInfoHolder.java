@@ -7,6 +7,7 @@ public interface SQLInfoHolder {
 
     /**
      * get the base table name.
+     *
      * @return the base table name
      */
     String getBaseTableName();

@@ -48,6 +48,6 @@ public class OnVisitorMatchLookupBuilder implements SQLASTVisitor {
                 column.setName("$" + columnName);
             }
         }
-        return true;
+        return false;
     }
 }

@@ -40,6 +40,6 @@ public class OnVisitorLetsBuilder implements SQLASTVisitor {
             }
             onDocument.put(columnName.replace(".", "_").toLowerCase(), "$" + columnName);
         }
-        return true;
+        return false;
     }
 }

@@ -61,7 +61,7 @@ public class WhereVisitorMatchAndLookupPipelineMatchBuilder implements SQLASTVis
         if (SqlUtils.isColumn(column)) {
             this.isBaseAliasOrValue = SqlUtils.isTableAliasOfColumn(column, this.baseAliasTable);
         }
-        return true;
+        return false;
     }
 
 
@@ -78,6 +78,10 @@ public class WhereVisitorMatchAndLookupPipelineMatchBuilder implements SQLASTVis
             if (this.isBaseAliasOrValue) {
                 this.setOrAndExpression(outputMatch, expr);
             }
+        } else if (operator == SQLBinaryOperator.IsNot && expr.getRight() instanceof SQLNullExpr) {
+            if (this.isBaseAliasOrValue) {
+                this.setOrAndExpression(outputMatch, expr);
+            }
         } else {
             this.isBaseAliasOrValue = true;
             expr.getLeft().accept(this);
@@ -90,7 +94,7 @@ public class WhereVisitorMatchAndLookupPipelineMatchBuilder implements SQLASTVis
                 }
             }
         }
-        return true;
+        return false;
     }
 
     /**
@@ -108,6 +112,6 @@ public class WhereVisitorMatchAndLookupPipelineMatchBuilder implements SQLASTVis
                 this.setOrAndExpression(outputMatch, expr);
             }
         }
-        return true;
+        return false;
     }
 }

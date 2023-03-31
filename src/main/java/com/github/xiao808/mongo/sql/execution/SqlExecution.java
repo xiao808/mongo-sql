@@ -7,7 +7,7 @@ import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.github.xiao808.mongo.sql.InheritableThreadLocalMongoContextHolder;
-import com.github.xiao808.mongo.sql.MongoContext;
+import com.github.xiao808.mongo.sql.QueryTransformer;
 import com.mongodb.client.MongoDatabase;
 
 import java.util.Objects;
@@ -27,7 +27,7 @@ public interface SqlExecution {
      */
     static <T> SqlExecution getInstance() {
         // get current mongo context
-        MongoContext mongoContext = InheritableThreadLocalMongoContextHolder.getContext();
+        QueryTransformer mongoContext = InheritableThreadLocalMongoContextHolder.getContext();
         SQLStatement sqlStatement = mongoContext.getSqlStatement();
         // can not be parsed whiling SQLStatement is null.
         Objects.requireNonNull(sqlStatement, "empty mongo context for execution.");

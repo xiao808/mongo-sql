@@ -15,13 +15,13 @@ import java.util.Map;
 public class HavingClauseProcessor extends WhereClauseProcessor {
 
 
-
     /**
      * Default Constructor.
-     * @param defaultFieldType the default {@link FieldType}
+     *
+     * @param defaultFieldType            the default {@link FieldType}
      * @param fieldNameToFieldTypeMapping the field name to {@link FieldType} mapping
-     * @param aliasHolder the {@link AliasHolder}
-     * @param requiresAggregation true if this sql statement requires aggregation
+     * @param aliasHolder                 the {@link AliasHolder}
+     * @param requiresAggregation         true if this sql statement requires aggregation
      */
     public HavingClauseProcessor(final FieldType defaultFieldType,
                                  final Map<String, FieldType> fieldNameToFieldTypeMapping,
@@ -31,9 +31,10 @@ public class HavingClauseProcessor extends WhereClauseProcessor {
 
     /**
      * Recurse through functions in the sql structure to generate mongo query structure.
-     * @param query the query object
-     * @param object the value that needs to be parsed
-     * @param defaultFieldType the default {@link FieldType}
+     *
+     * @param query                       the query object
+     * @param object                      the value that needs to be parsed
+     * @param defaultFieldType            the default {@link FieldType}
      * @param fieldNameToFieldTypeMapping the field name to {@link FieldType}
      * @return the mongo structure
      * @throws ParseException if the value cannot be parsed
@@ -46,7 +47,7 @@ public class HavingClauseProcessor extends WhereClauseProcessor {
             throws ParseException {
         if (object instanceof SQLMethodInvokeExpr) {
             SQLMethodInvokeExpr function = (SQLMethodInvokeExpr) object;
-            if (SqlUtils.isAggregateExpression(function)) {
+            if (SqlUtils.isAggregateExpression(function.toString())) {
                 String alias = aliasHolder.getAliasFromFieldExp(function.toString());
                 return "$" + SqlUtils.generateAggField(function, alias).getValue();
             }

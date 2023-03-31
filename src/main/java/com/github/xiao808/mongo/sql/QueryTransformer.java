@@ -16,6 +16,7 @@ import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
 import com.alibaba.druid.sql.ast.statement.SQLSelectOrderByItem;
 import com.alibaba.druid.sql.ast.statement.SQLSubqueryTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateSetItem;
+import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.github.xiao808.mongo.sql.holder.AliasHolder;
 import com.github.xiao808.mongo.sql.holder.ExpressionHolder;
 import com.github.xiao808.mongo.sql.holder.from.FromHolder;
@@ -26,32 +27,17 @@ import com.github.xiao808.mongo.sql.processor.WhereClauseProcessor;
 import com.github.xiao808.mongo.sql.utils.SqlUtils;
 import com.github.xiao808.mongo.sql.visitor.ExpVisitorEraseAliasTableBaseBuilder;
 import com.github.xiao808.mongo.sql.visitor.WhereVisitorMatchAndLookupPipelineMatchBuilder;
-import com.mongodb.client.AggregateIterable;
-import com.mongodb.client.FindIterable;
-import com.mongodb.client.MongoCollection;
-import com.mongodb.client.MongoDatabase;
-import com.mongodb.client.result.DeleteResult;
-import com.mongodb.client.result.UpdateResult;
-import com.mongodb.lang.Nullable;
 import org.apache.commons.lang.mutable.MutableBoolean;
-import org.bson.BsonValue;
 import org.bson.Document;
-import org.bson.json.JsonMode;
-import org.bson.json.JsonWriterSettings;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.io.StringWriter;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 import static org.apache.commons.lang.Validate.notNull;
@@ -59,17 +45,15 @@ import static org.apache.commons.lang.Validate.notNull;
 /**
  * Main class responsible for query conversion.
  */
-public final class QueryConverter {
+public final class QueryTransformer {
+    private final SQLStatement sqlStatement;
     private final Integer aggregationBatchSize;
     private final Boolean aggregationAllowDiskUse;
-    private final MongoDBQueryHolder mongoDBQueryHolder;
+    private final MongoDBQueryHolder mongoQueryHolder;
 
     private final Map<String, FieldType> fieldNameToFieldTypeMapping;
     private final FieldType defaultFieldType;
     private final SQLCommandInfoHolder sqlCommandInfoHolder;
-
-    private static final JsonWriterSettings RELAXED = JsonWriterSettings.builder().outputMode(JsonMode.RELAXED).build();
-
 
     /**
      * Create a QueryConverter with an InputStream.
@@ -81,20 +65,20 @@ public final class QueryConverter {
      * @param aggregationBatchSize        set the batch size for aggregation
      * @throws ParseException when the sql query cannot be parsed
      */
-    private QueryConverter(final String sql, final Map<String, FieldType> fieldNameToFieldTypeMapping,
-                           final FieldType defaultFieldType, final Boolean aggregationAllowDiskUse,
-                           final Integer aggregationBatchSize) throws ParseException {
+    private QueryTransformer(final String sql, final DbType dbType, final Map<String, FieldType> fieldNameToFieldTypeMapping,
+                             final FieldType defaultFieldType, final Boolean aggregationAllowDiskUse,
+                             final Integer aggregationBatchSize) throws ParseException {
         this.aggregationAllowDiskUse = aggregationAllowDiskUse;
         this.aggregationBatchSize = aggregationBatchSize;
-        SQLStatement sqlStatement = SQLUtils.parseSingleStatement(sql, DbType.mysql);
+        this.sqlStatement = SQLUtils.parseSingleStatement(sql, dbType);
         this.defaultFieldType = defaultFieldType != null ? defaultFieldType : FieldType.UNKNOWN;
         this.sqlCommandInfoHolder = SQLCommandInfoHolder.Builder
                 .create(defaultFieldType, fieldNameToFieldTypeMapping)
-                .setStatement(sqlStatement)
+                .initSqlStatement(sqlStatement)
                 .build();
         this.fieldNameToFieldTypeMapping = fieldNameToFieldTypeMapping != null
                 ? fieldNameToFieldTypeMapping : Collections.emptyMap();
-        this.mongoDBQueryHolder = getMongoQueryInternal(sqlCommandInfoHolder);
+        this.mongoQueryHolder = getMongoQueryInternal(sqlCommandInfoHolder);
         validate();
     }
 
@@ -117,8 +101,39 @@ public final class QueryConverter {
      * @return the {@link MongoDBQueryHolder}
      * that contains all that is needed to describe the query to be run.
      */
-    public MongoDBQueryHolder getMongoQuery() {
-        return mongoDBQueryHolder;
+    public MongoDBQueryHolder getDBMongoQueryHolder() {
+        return mongoQueryHolder;
+    }
+
+    /**
+     * get sql command info
+     *
+     * @return sql command info
+     */
+    public SQLCommandInfoHolder getSqlCommandInfoHolder() {
+        return sqlCommandInfoHolder;
+    }
+
+    public SQLStatement getSqlStatement() {
+        return sqlStatement;
+    }
+
+    /**
+     * get aggregation batch size
+     *
+     * @return aggregation batch size
+     */
+    public Integer getAggregationBatchSize() {
+        return aggregationBatchSize;
+    }
+
+    /**
+     * whether using disk for aggregation
+     *
+     * @return whether using disk for aggregation
+     */
+    public Boolean getAggregationAllowDiskUse() {
+        return aggregationAllowDiskUse;
     }
 
     /**
@@ -130,58 +145,56 @@ public final class QueryConverter {
      */
     public List<Document> fromSQLCommandInfoHolderToAggregateSteps(final SQLCommandInfoHolder sqlCommandInfoHolder)
             throws ParseException {
-        MongoDBQueryHolder mqueryHolder = getMongoQueryInternal(sqlCommandInfoHolder);
-        return generateAggSteps(mqueryHolder, sqlCommandInfoHolder);
+        MongoDBQueryHolder queryHolder = getMongoQueryInternal(sqlCommandInfoHolder);
+        return generateAggSteps(queryHolder, sqlCommandInfoHolder);
     }
-
 
     private MongoDBQueryHolder getMongoQueryInternal(final SQLCommandInfoHolder sqlCommandInfoHolder)
             throws ParseException {
-        MongoDBQueryHolder mongoDBQueryHolder = new MongoDBQueryHolder(
-                sqlCommandInfoHolder.getBaseTableName(), sqlCommandInfoHolder.getSqlCommandType());
+        MongoDBQueryHolder queryHolder = new MongoDBQueryHolder(sqlCommandInfoHolder.getBaseTableName());
         Document document = new Document();
         //From Subquery
         if (sqlCommandInfoHolder.getFromHolder().getBaseFrom().getClass() == SQLSubqueryTableSource.class) {
-            mongoDBQueryHolder.setPrevSteps(fromSQLCommandInfoHolderToAggregateSteps(
+            queryHolder.setPrevSteps(fromSQLCommandInfoHolderToAggregateSteps(
                     (SQLCommandInfoHolder) sqlCommandInfoHolder.getFromHolder().getBaseSQLHolder()));
-            mongoDBQueryHolder.setRequiresMultistepAggregation(true);
+            queryHolder.setRequiresMultistepAggregation(true);
         }
 
         if (sqlCommandInfoHolder.isDistinct()) {
             document.put(sqlCommandInfoHolder.getSelectItems().get(0).toString(), 1);
-            mongoDBQueryHolder.setProjection(document);
-            mongoDBQueryHolder.setDistinct(true);
+            queryHolder.setProjection(document);
+            queryHolder.setDistinct(true);
         } else if (sqlCommandInfoHolder.getGroupBys().size() > 0) {
             List<String> groupBys = preprocessGroupBy(sqlCommandInfoHolder.getGroupBys(),
                     sqlCommandInfoHolder.getFromHolder());
             List<SQLSelectItem> selects = preprocessSelect(sqlCommandInfoHolder.getSelectItems(),
                     sqlCommandInfoHolder.getFromHolder());
             if (sqlCommandInfoHolder.getGroupBys().size() > 0) {
-                mongoDBQueryHolder.setGroupBys(groupBys);
+                queryHolder.setGroupBys(groupBys);
             }
-            mongoDBQueryHolder.setProjection(createProjectionsFromSelectItems(selects, groupBys));
+            queryHolder.setProjection(createProjectionsFromSelectItems(selects, groupBys));
             AliasProjectionForGroupItems aliasProjectionForGroupItems = createAliasProjectionForGroupItems(
                     selects, groupBys);
-            mongoDBQueryHolder.setAliasProjection(aliasProjectionForGroupItems.getDocument());
-            mongoDBQueryHolder.setRequiresMultistepAggregation(true);
+            queryHolder.setAliasProjection(aliasProjectionForGroupItems.getDocument());
+            queryHolder.setRequiresMultistepAggregation(true);
         } else if (sqlCommandInfoHolder.isTotalGroup()) {
             List<SQLSelectItem> selects = preprocessSelect(sqlCommandInfoHolder.getSelectItems(),
                     sqlCommandInfoHolder.getFromHolder());
             Document d = createProjectionsFromSelectItems(selects, null);
-            mongoDBQueryHolder.setProjection(d);
+            queryHolder.setProjection(d);
             AliasProjectionForGroupItems aliasProjectionForGroupItems = createAliasProjectionForGroupItems(
                     selects, null);
             sqlCommandInfoHolder.getAliasHolder().combine(aliasProjectionForGroupItems.getFieldToAliasMapping());
-            mongoDBQueryHolder.setAliasProjection(aliasProjectionForGroupItems.getDocument());
+            queryHolder.setAliasProjection(aliasProjectionForGroupItems.getDocument());
         } else if (!SqlUtils.isSelectAll(sqlCommandInfoHolder.getSelectItems())) {
             document.put("_id", 0);
             for (SQLSelectItem selectItem : sqlCommandInfoHolder.getSelectItems()) {
                 SQLExpr selectExpressionItem = selectItem.getExpr();
                 if (selectExpressionItem instanceof SQLPropertyExpr) {
                     SQLPropertyExpr c = (SQLPropertyExpr) selectExpressionItem;
-                    //If we found alias of base table we ignore it because basetable doesn't need alias, it's itself
+                    //If we found alias of base table we ignore it because base table doesn't need alias, it's itself
                     String columnName = SqlUtils.removeAliasFromColumn(c, sqlCommandInfoHolder
-                            .getFromHolder().getBaseAliasTable()).getName();
+                            .getFromHolder().getBaseAliasTable()).getSimpleName();
                     String alias = selectItem.getAlias();
                     document.put((alias != null ? alias : columnName), (alias != null ? "$" + columnName : 1));
                 } else if (selectExpressionItem instanceof SQLSubqueryTableSource) {
@@ -198,16 +211,16 @@ public final class QueryConverter {
                     throw new ParseException("Unsupported project expression");
                 }
             }
-            mongoDBQueryHolder.setProjection(document);
+            queryHolder.setProjection(document);
         }
 
         if (sqlCommandInfoHolder.isCountAll()) {
-            mongoDBQueryHolder.setCountAll(true);
+            queryHolder.setCountAll(true);
         }
 
-        if (sqlCommandInfoHolder.getJoins() != null) {
-            mongoDBQueryHolder.setRequiresMultistepAggregation(true);
-            mongoDBQueryHolder.setJoinPipeline(
+        if (sqlCommandInfoHolder.getJoins() != null && !sqlCommandInfoHolder.getJoins().isEmpty()) {
+            queryHolder.setRequiresMultistepAggregation(true);
+            queryHolder.setJoinPipeline(
                     JoinProcessor.toPipelineSteps(this,
                             sqlCommandInfoHolder.getFromHolder(),
                             sqlCommandInfoHolder.getJoins(), SqlUtils.cloneExpression(
@@ -215,23 +228,23 @@ public final class QueryConverter {
         }
 
         if (sqlCommandInfoHolder.getOrderByElements() != null && sqlCommandInfoHolder.getOrderByElements().size() > 0) {
-            mongoDBQueryHolder.setSort(createSortInfoFromOrderByElements(
+            queryHolder.setSort(createSortInfoFromOrderByElements(
                     preprocessOrderBy(sqlCommandInfoHolder.getOrderByElements(), sqlCommandInfoHolder.getFromHolder()),
                     sqlCommandInfoHolder.getAliasHolder(), sqlCommandInfoHolder.getGroupBys()));
         }
 
         if (sqlCommandInfoHolder.getWhereClause() != null) {
             WhereClauseProcessor whereClauseProcessor = new WhereClauseProcessor(defaultFieldType,
-                    fieldNameToFieldTypeMapping, mongoDBQueryHolder.isRequiresMultistepAggregation());
+                    fieldNameToFieldTypeMapping, queryHolder.isRequiresMultistepAggregation());
             SQLExpr preprocessedWhere = preprocessWhere(sqlCommandInfoHolder.getWhereClause(),
                     sqlCommandInfoHolder.getFromHolder());
             if (preprocessedWhere != null) {
                 //can't be null because of where of joined tables
-                mongoDBQueryHolder.setQuery((Document) whereClauseProcessor
+                queryHolder.setQuery((Document) whereClauseProcessor
                         .parseExpression(new Document(), preprocessedWhere, null));
             }
 
-            if (SQLCommandType.UPDATE.equals(sqlCommandInfoHolder.getSqlCommandType())) {
+            if (sqlStatement instanceof SQLUpdateStatement) {
                 Document updateSetDoc = new Document();
                 for (SQLUpdateSetItem updateSet : sqlCommandInfoHolder.getUpdateSets().stream().filter(sqlUpdateSetItem -> !(sqlUpdateSetItem.getValue() instanceof SQLNullExpr)).collect(Collectors.toList())) {
                     updateSetDoc.put(SqlUtils.getColumnNameFromColumn(updateSet.getColumn()),
@@ -239,31 +252,31 @@ public final class QueryConverter {
                                     defaultFieldType, fieldNameToFieldTypeMapping,
                                     sqlCommandInfoHolder.getAliasHolder(), null));
                 }
-                mongoDBQueryHolder.setUpdateSet(updateSetDoc);
+                queryHolder.setUpdateSet(updateSetDoc);
                 List<String> unsets = new ArrayList<>();
                 for (SQLUpdateSetItem updateSet : sqlCommandInfoHolder.getUpdateSets().stream().filter(sqlUpdateSetItem -> sqlUpdateSetItem.getValue() instanceof SQLNullExpr).collect(Collectors.toList())) {
                     unsets.add(SqlUtils.getColumnNameFromColumn(updateSet.getColumn()));
                 }
-                mongoDBQueryHolder.setFieldsToUnset(unsets);
+                queryHolder.setFieldsToUnset(unsets);
             }
         }
         if (sqlCommandInfoHolder.getHavingClause() != null) {
             HavingClauseProcessor havingClauseProcessor = new HavingClauseProcessor(defaultFieldType,
                     fieldNameToFieldTypeMapping, sqlCommandInfoHolder.getAliasHolder(),
-                    mongoDBQueryHolder.isRequiresMultistepAggregation());
-            mongoDBQueryHolder.setHaving((Document) havingClauseProcessor.parseExpression(new Document(),
+                    queryHolder.isRequiresMultistepAggregation());
+            queryHolder.setHaving((Document) havingClauseProcessor.parseExpression(new Document(),
                     sqlCommandInfoHolder.getHavingClause(), null));
         }
 
-        mongoDBQueryHolder.setOffset(sqlCommandInfoHolder.getOffset());
-        mongoDBQueryHolder.setLimit(sqlCommandInfoHolder.getLimit());
+        queryHolder.setOffset(sqlCommandInfoHolder.getOffset());
+        queryHolder.setLimit(sqlCommandInfoHolder.getLimit());
 
-        return mongoDBQueryHolder;
+        return queryHolder;
     }
 
-    protected Object recurseFunctions(final Document query, final Object object,
-                                      final FieldType defaultFieldType,
-                                      final Map<String, FieldType> fieldNameToFieldTypeMapping) throws ParseException {
+    private Object recurseFunctions(final Document query, final Object object,
+                                    final FieldType defaultFieldType,
+                                    final Map<String, FieldType> fieldNameToFieldTypeMapping) throws ParseException {
         if (object instanceof SQLMethodInvokeExpr) {
             SQLMethodInvokeExpr function = (SQLMethodInvokeExpr) object;
             query.put("$" + SqlUtils.translateFunctionName(function.getMethodName()),
@@ -352,7 +365,7 @@ public final class QueryConverter {
                 String projectField = aliasHolder.getFieldFromAliasOrField(sortField);
                 if (!groupBys.isEmpty()) {
 
-                    if (!SqlUtils.isAggregateExpression(orderByElement.getExpr())) {
+                    if (!SqlUtils.isAggregateExpression(projectField)) {
                         if (groupBys.size() > 1) {
                             projectField = "_id." + projectField.replaceAll("\\.", "_");
                         } else {
@@ -456,7 +469,7 @@ public final class QueryConverter {
         }
 
         for (SQLSelectItem selectItem : functionItems) {
-            SQLMethodInvokeExpr function = (SQLMethodInvokeExpr)selectItem.getExpr();
+            SQLMethodInvokeExpr function = (SQLMethodInvokeExpr) selectItem.getExpr();
             String alias = selectItem.getAlias();
             Entry<String, String> fieldToAliasMapping = SqlUtils.generateAggField(function, alias);
             String aliasedField = fieldToAliasMapping.getValue();
@@ -494,269 +507,65 @@ public final class QueryConverter {
     }
 
 
-    /**
-     * get this query with supporting data in a document format.
-     * The document has the following fields:
-     * <pre>
-     *     {
-     *   "collection": "the collection the query is running on",
-     *   "query": "the query (Document) for aggregation (List) needed to run this query",
-     *   "commandType": "SELECT or DELETE",
-     *   "countAll": "true if this is a count all Query",
-     *   "distinct": "the field to do a distnct query on",
-     *   "options": "A Document with the options for this aggregation",
-     *   "projection": "The projection to use for this query"
-     * }
-     * </pre>
-     * <p>
-     * <p>
-     * For example:
-     * <pre>
-     *     {
-     *   "collection": "Restaurants",
-     *   "query": [
-     *     {
-     *       "$match": {
-     *         "$expr": {
-     *           "$eq": [
-     *             {
-     *               "$toObjectId": "5e97ae59c63d1b3ff8e07c74"
-     *             },
-     *             "$_id"
-     *           ]
-     *         }
-     *       }
-     *     },
-     *     {
-     *       "$project": {
-     *         "_id": 0,
-     *         "id": "$_id",
-     *         "R": "$Restaurant"
-     *       }
-     *     }
-     *   ]
-     * }
-     * </pre>
-     *
-     * @return the document object.
-     */
-    public Document getQueryAsDocument() {
-        Document retValDocument = new Document();
-        MongoDBQueryHolder mongoDBQueryHolder = getMongoQuery();
-        boolean isFindQuery = false;
-        final String collectionName = mongoDBQueryHolder.getCollection();
-        if (mongoDBQueryHolder.isDistinct()) {
-            retValDocument.put("collection", collectionName);
-            retValDocument.put("distinct", getDistinctFieldName(mongoDBQueryHolder));
-            retValDocument.put("query", mongoDBQueryHolder.getQuery());
-        } else if (sqlCommandInfoHolder.isCountAll() && !isAggregate(mongoDBQueryHolder)) {
-            retValDocument.put("countAll", true);
-            retValDocument.put("collection", collectionName);
-            retValDocument.put("query", mongoDBQueryHolder.getQuery());
-        } else if (isAggregate(mongoDBQueryHolder)) {
-            retValDocument.put("collection", collectionName);
-            List<Document> aggregationDocuments = generateAggSteps(mongoDBQueryHolder, sqlCommandInfoHolder);
-            retValDocument.put("query", aggregationDocuments);
-
-            Document options = new Document();
-            if (aggregationAllowDiskUse != null) {
-                options.put("allowDiskUse", aggregationAllowDiskUse);
-            }
-
-            if (aggregationBatchSize != null) {
-                options.put("cursor", new Document("batchSize", aggregationBatchSize));
-            }
-
-            if (options.size() > 0) {
-                retValDocument.put("options", options);
-            }
-
-
-        } else {
-            retValDocument.put("commandType", sqlCommandInfoHolder.getSqlCommandType().name());
-            if (sqlCommandInfoHolder.getSqlCommandType() == SQLCommandType.SELECT) {
-                isFindQuery = true;
-                retValDocument.put("collection", collectionName);
-            } else if (Arrays.asList(SQLCommandType.DELETE, SQLCommandType.UPDATE)
-                    .contains(sqlCommandInfoHolder.getSqlCommandType())) {
-                retValDocument.put("collection", collectionName);
-            }
-            if (mongoDBQueryHolder.getUpdateSet() != null) {
-                retValDocument.put("updateSet", mongoDBQueryHolder.getUpdateSet());
-            }
-            if (mongoDBQueryHolder.getFieldsToUnset() != null) {
-                retValDocument.put("updateUnSet", mongoDBQueryHolder.getFieldsToUnset());
-            }
-            retValDocument.put("query", mongoDBQueryHolder.getQuery());
-            if (mongoDBQueryHolder.getProjection() != null && mongoDBQueryHolder.getProjection().size() > 0
-                    && sqlCommandInfoHolder.getSqlCommandType() == SQLCommandType.SELECT) {
-                retValDocument.put("projection", mongoDBQueryHolder.getProjection());
-            }
-        }
-
-        if (isFindQuery) {
-            if (mongoDBQueryHolder.getSort() != null && mongoDBQueryHolder.getSort().size() > 0) {
-                retValDocument.put("sort", mongoDBQueryHolder.getSort());
-            }
-
-            if (mongoDBQueryHolder.getOffset() != -1) {
-                retValDocument.put("skip", mongoDBQueryHolder.getOffset());
-            }
-
-            if (mongoDBQueryHolder.getLimit() != -1) {
-                retValDocument.put("limit", mongoDBQueryHolder.getLimit());
-            }
-        }
-
-        return retValDocument;
-    }
-
-    private boolean isAggregate(final MongoDBQueryHolder mongoDBQueryHolder) {
-        return (sqlCommandInfoHolder.getAliasHolder() != null
-                && !sqlCommandInfoHolder.getAliasHolder().isEmpty())
-                || sqlCommandInfoHolder.getGroupBys().size() > 0
-                || (sqlCommandInfoHolder.getJoins() != null && sqlCommandInfoHolder.getJoins().size() > 0)
-                || (mongoDBQueryHolder.getPrevSteps() != null && !mongoDBQueryHolder.getPrevSteps().isEmpty())
-                || (sqlCommandInfoHolder.isTotalGroup() && !SqlUtils.isCountAll(sqlCommandInfoHolder.getSelectItems()));
-    }
-
-    private String getDistinctFieldName(final MongoDBQueryHolder mongoDBQueryHolder) {
-        return mongoDBQueryHolder.getProjection().keySet().iterator().next();
-    }
-
-    /**
-     * @param mongoDatabase the database to run the query against.
-     * @param <T>           variable based on the type of query run.
-     * @return When query does a find will return QueryResultIterator&lt;{@link Document}&gt;
-     * When query does a count will return a Long
-     * When query does a distinct will return QueryResultIterator&lt;{@link String}&gt;
-     * @throws ParseException when the sql query cannot be parsed
-     */
-    @SuppressWarnings("unchecked")
-    public <T> T run(final MongoDatabase mongoDatabase) throws ParseException {
-        MongoDBQueryHolder mongoDBQueryHolder = getMongoQuery();
-
-        MongoCollection mongoCollection = mongoDatabase.getCollection(mongoDBQueryHolder.getCollection());
-
-        if (SQLCommandType.SELECT.equals(mongoDBQueryHolder.getSqlCommandType())) {
-
-            if (mongoDBQueryHolder.isDistinct()) {
-                return (T) new QueryResultIterator<>(mongoCollection.distinct(
-                        getDistinctFieldName(mongoDBQueryHolder), mongoDBQueryHolder.getQuery(), String.class));
-            } else if (sqlCommandInfoHolder.isCountAll() && !isAggregate(mongoDBQueryHolder)) {
-                return (T) Long.valueOf(mongoCollection.countDocuments(mongoDBQueryHolder.getQuery()));
-            } else if (isAggregate(mongoDBQueryHolder)) {
-
-                AggregateIterable aggregate = mongoCollection.aggregate(
-                        generateAggSteps(mongoDBQueryHolder, sqlCommandInfoHolder));
-
-                if (aggregationAllowDiskUse != null) {
-                    aggregate.allowDiskUse(aggregationAllowDiskUse);
-                }
-
-                if (aggregationBatchSize != null) {
-                    aggregate.batchSize(aggregationBatchSize);
-                }
-
-                return (T) new QueryResultIterator<>(aggregate);
-            } else {
-                FindIterable findIterable = mongoCollection.find(mongoDBQueryHolder.getQuery())
-                        .projection(mongoDBQueryHolder.getProjection());
-                if (mongoDBQueryHolder.getSort() != null && mongoDBQueryHolder.getSort().size() > 0) {
-                    findIterable.sort(mongoDBQueryHolder.getSort());
-                }
-                if (mongoDBQueryHolder.getOffset() != -1) {
-                    findIterable.skip((int) mongoDBQueryHolder.getOffset());
-                }
-                if (mongoDBQueryHolder.getLimit() != -1) {
-                    findIterable.limit((int) mongoDBQueryHolder.getLimit());
-                }
-
-                return (T) new QueryResultIterator<>(findIterable);
-            }
-        } else if (SQLCommandType.DELETE.equals(mongoDBQueryHolder.getSqlCommandType())) {
-            DeleteResult deleteResult = mongoCollection.deleteMany(mongoDBQueryHolder.getQuery());
-            return (T) ((Long) deleteResult.getDeletedCount());
-        } else if (SQLCommandType.UPDATE.equals(mongoDBQueryHolder.getSqlCommandType())) {
-            Document updateSet = mongoDBQueryHolder.getUpdateSet();
-            List<String> fieldsToUnset = mongoDBQueryHolder.getFieldsToUnset();
-            UpdateResult result = new EmptyUpdateResult();
-            if ((updateSet != null && !updateSet.isEmpty()) && (fieldsToUnset != null && !fieldsToUnset.isEmpty())) {
-                result = mongoCollection.updateMany(mongoDBQueryHolder.getQuery(),
-                        Arrays.asList(new Document().append("$set", updateSet),
-                                new Document().append("$unset", fieldsToUnset)));
-            } else if (updateSet != null && !updateSet.isEmpty()) {
-                result = mongoCollection.updateMany(mongoDBQueryHolder.getQuery(),
-                        new Document().append("$set", updateSet));
-            } else if (fieldsToUnset != null && !fieldsToUnset.isEmpty()) {
-                result = mongoCollection.updateMany(mongoDBQueryHolder.getQuery(),
-                        new Document().append("$unset", fieldsToUnset));
-            }
-            return (T) ((Long) result.getModifiedCount());
-        } else {
-            throw new UnsupportedOperationException("SQL command type not supported");
-        }
-    }
-
     //Set up start pipeline, from other steps, subqueries, ...
-    private List<Document> setUpStartPipeline(final MongoDBQueryHolder mongoDBQueryHolder) {
-        List<Document> documents = mongoDBQueryHolder.getPrevSteps();
+    public List<Document> setUpStartPipeline(final MongoDBQueryHolder mongoQueryHolder) {
+        List<Document> documents = mongoQueryHolder.getPrevSteps();
         if (documents == null || documents.isEmpty()) {
             documents = new LinkedList<Document>();
         }
         return documents;
     }
 
-    private List<Document> generateAggSteps(final MongoDBQueryHolder mongoDBQueryHolder,
-                                            final SQLCommandInfoHolder sqlCommandInfoHolder) {
+    public List<Document> generateAggSteps(final MongoDBQueryHolder mongoQueryHolder,
+                                           final SQLCommandInfoHolder sqlCommandInfoHolder) {
 
-        List<Document> documents = setUpStartPipeline(mongoDBQueryHolder);
+        List<Document> documents = setUpStartPipeline(mongoQueryHolder);
 
-        if (mongoDBQueryHolder.getQuery() != null && mongoDBQueryHolder.getQuery().size() > 0) {
-            documents.add(new Document("$match", mongoDBQueryHolder.getQuery()));
+        if (mongoQueryHolder.getQuery() != null && mongoQueryHolder.getQuery().size() > 0) {
+            documents.add(new Document("$match", mongoQueryHolder.getQuery()));
         }
         if (sqlCommandInfoHolder.getJoins() != null && !sqlCommandInfoHolder.getJoins().isEmpty()) {
-            documents.addAll(mongoDBQueryHolder.getJoinPipeline());
+            documents.addAll(mongoQueryHolder.getJoinPipeline());
         }
         if (!sqlCommandInfoHolder.getGroupBys().isEmpty() || sqlCommandInfoHolder.isTotalGroup()) {
-            if (mongoDBQueryHolder.getProjection().get("_id") == null) {
+            if (mongoQueryHolder.getProjection().get("_id") == null) {
                 //Generate _id with empty document
                 Document dgroup = new Document();
                 dgroup.put("_id", new Document());
-                for (Entry<String, Object> keyValue : mongoDBQueryHolder.getProjection().entrySet()) {
+                for (Entry<String, Object> keyValue : mongoQueryHolder.getProjection().entrySet()) {
                     if (!keyValue.getKey().equals("_id")) {
                         dgroup.put(keyValue.getKey(), keyValue.getValue());
                     }
                 }
                 documents.add(new Document("$group", dgroup));
             } else {
-                documents.add(new Document("$group", mongoDBQueryHolder.getProjection()));
+                documents.add(new Document("$group", mongoQueryHolder.getProjection()));
             }
 
         }
-        if (mongoDBQueryHolder.getHaving() != null && mongoDBQueryHolder.getHaving().size() > 0) {
-            documents.add(new Document("$match", mongoDBQueryHolder.getHaving()));
+        if (mongoQueryHolder.getHaving() != null && mongoQueryHolder.getHaving().size() > 0) {
+            documents.add(new Document("$match", mongoQueryHolder.getHaving()));
         }
-        if (mongoDBQueryHolder.getSort() != null && mongoDBQueryHolder.getSort().size() > 0) {
-            documents.add(new Document("$sort", mongoDBQueryHolder.getSort()));
+        if (mongoQueryHolder.getSort() != null && mongoQueryHolder.getSort().size() > 0) {
+            documents.add(new Document("$sort", mongoQueryHolder.getSort()));
         }
-        if (mongoDBQueryHolder.getOffset() != -1) {
-            documents.add(new Document("$skip", mongoDBQueryHolder.getOffset()));
+        if (mongoQueryHolder.getOffset() != -1) {
+            documents.add(new Document("$skip", mongoQueryHolder.getOffset()));
         }
-        if (mongoDBQueryHolder.getLimit() != -1) {
-            documents.add(new Document("$limit", mongoDBQueryHolder.getLimit()));
+        if (mongoQueryHolder.getLimit() != -1) {
+            documents.add(new Document("$limit", mongoQueryHolder.getLimit()));
         }
 
-        Document aliasProjection = mongoDBQueryHolder.getAliasProjection();
+        Document aliasProjection = mongoQueryHolder.getAliasProjection();
         if (!aliasProjection.isEmpty()) {
             //Alias Group by
             documents.add(new Document("$project", aliasProjection));
         }
 
         if (sqlCommandInfoHolder.getGroupBys().isEmpty() && !sqlCommandInfoHolder.isTotalGroup()
-                && !mongoDBQueryHolder.getProjection().isEmpty()) {
+                && !mongoQueryHolder.getProjection().isEmpty()) {
             //Alias no group
-            Document projection = mongoDBQueryHolder.getProjection();
+            Document projection = mongoQueryHolder.getProjection();
             documents.add(new Document("$project", projection));
         }
 
@@ -764,13 +573,14 @@ public final class QueryConverter {
     }
 
     /**
-     * Builder for {@link QueryConverter}.
+     * Builder for {@link QueryTransformer}.
      */
     public static class Builder {
 
         private Boolean aggregationAllowDiskUse = null;
         private Integer aggregationBatchSize = null;
         private String sql;
+        private DbType dbType;
         private Map<String, FieldType> fieldNameToFieldTypeMapping = new HashMap<>();
         private FieldType defaultFieldType = FieldType.UNKNOWN;
 
@@ -783,6 +593,17 @@ public final class QueryConverter {
         public Builder sql(final String sql) {
             notNull(sql);
             this.sql = sql;
+            return this;
+        }
+
+        /**
+         * set the sql database type.
+         *
+         * @param dbType the sql database type
+         * @return the builder
+         */
+        public Builder dbType(final DbType dbType) {
+            this.dbType = Objects.requireNonNullElse(dbType, DbType.mysql);
             return this;
         }
 
@@ -835,13 +656,13 @@ public final class QueryConverter {
         }
 
         /**
-         * build the {@link QueryConverter}.
+         * build the {@link QueryTransformer}.
          *
-         * @return the {@link QueryConverter}
+         * @return the {@link QueryTransformer}
          * @throws ParseException if there was a problem processing the sql
          */
-        public QueryConverter build() throws ParseException {
-            return new QueryConverter(sql, fieldNameToFieldTypeMapping,
+        public QueryTransformer build() throws ParseException {
+            return new QueryTransformer(sql, dbType, fieldNameToFieldTypeMapping,
                     defaultFieldType, aggregationAllowDiskUse, aggregationBatchSize);
         }
     }
@@ -874,28 +695,6 @@ public final class QueryConverter {
         public AliasProjectionForGroupItems setDocument(final Document document) {
             this.document = document;
             return this;
-        }
-    }
-
-    private static class EmptyUpdateResult extends UpdateResult {
-        @Override
-        public boolean wasAcknowledged() {
-            return false;
-        }
-
-        @Override
-        public long getMatchedCount() {
-            return 0;
-        }
-
-        @Override
-        public long getModifiedCount() {
-            return 0;
-        }
-
-        @Override
-        public BsonValue getUpsertedId() {
-            return null;
         }
     }
 }

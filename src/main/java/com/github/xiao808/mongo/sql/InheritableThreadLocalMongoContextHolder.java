@@ -13,20 +13,15 @@ public class InheritableThreadLocalMongoContextHolder {
     /**
      * all mongo context InheritableThreadLocal
      */
-    private static final ThreadLocal<MongoContext> MONGO_CONTEXT_THREAD_LOCAL = new InheritableThreadLocal<>();
+    private static final ThreadLocal<QueryTransformer> MONGO_CONTEXT_THREAD_LOCAL = new InheritableThreadLocal<>();
 
     /**
      * get current thread mongo context.
      *
      * @return mongo context
      */
-    public static MongoContext getContext() {
-        MongoContext context = MONGO_CONTEXT_THREAD_LOCAL.get();
-        if (context == null) {
-            context = createEmptyContext();
-            MONGO_CONTEXT_THREAD_LOCAL.set(context);
-        }
-        return context;
+    public static QueryTransformer getContext() {
+        return MONGO_CONTEXT_THREAD_LOCAL.get();
     }
 
     /**
@@ -34,18 +29,9 @@ public class InheritableThreadLocalMongoContextHolder {
      *
      * @param context mongo context
      */
-    public static void setContext(MongoContext context) {
+    public static void setContext(QueryTransformer context) {
         Objects.requireNonNull(context, "Only non-null MongoContext instances are permitted");
         MONGO_CONTEXT_THREAD_LOCAL.set(context);
-    }
-
-    /**
-     * create empty mongo context.
-     *
-     * @return mongo context
-     */
-    public static MongoContext createEmptyContext() {
-        return MongoContext.builder().build();
     }
 
     /**

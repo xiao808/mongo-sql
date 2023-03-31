@@ -14,6 +14,7 @@ public class ExpVisitorEraseAliasTableBaseBuilder implements SQLASTVisitor {
 
     /**
      * Default constructor.
+     *
      * @param baseAliasTable the alias for the base table
      */
     public ExpVisitorEraseAliasTableBaseBuilder(final String baseAliasTable) {
@@ -26,7 +27,7 @@ public class ExpVisitorEraseAliasTableBaseBuilder implements SQLASTVisitor {
     @Override
     public boolean visit(final SQLPropertyExpr column) {
         SqlUtils.removeAliasFromColumn(column, baseAliasTable);
-        return true;
+        return false;
     }
 
     /**
@@ -35,7 +36,7 @@ public class ExpVisitorEraseAliasTableBaseBuilder implements SQLASTVisitor {
     @Override
     public boolean visit(final SQLSelectItem selectExpressionItem) {
         SqlUtils.removeAliasFromSelectExpressionItem(selectExpressionItem, baseAliasTable);
-        return true;
+        return false;
     }
 
     /**

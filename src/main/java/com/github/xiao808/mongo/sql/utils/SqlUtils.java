@@ -83,13 +83,20 @@ public final class SqlUtils {
     public static String getStringValue(final SQLObject expression) {
         if (expression instanceof SQLValuableExpr) {
             return ((SQLValuableExpr) expression).getValue().toString();
-        } else if (expression instanceof SQLName) {
-            String columnName = ((SQLName) expression).getSimpleName();
+        } else if (expression instanceof SQLIdentifierExpr) {
+            String columnName = ((SQLIdentifierExpr) expression).getName();
             Matcher matcher = SURROUNDED_IN_QUOTES.matcher(columnName);
             if (matcher.matches()) {
                 return matcher.group(1);
             }
             return columnName;
+        } else if (expression instanceof SQLPropertyExpr) {
+            String columnName = expression.toString();
+            Matcher matcher = SURROUNDED_IN_QUOTES.matcher(columnName);
+            if (matcher.matches()) {
+                return matcher.group(1);
+            }
+            return columnName.startsWith(".") ? columnName.substring(1) : columnName;
         }
         return expression.toString();
     }
@@ -638,7 +645,7 @@ public final class SqlUtils {
      * @param aliasBase the alias base
      * @return the column without the tablename
      */
-    public static SQLPropertyExpr removeAliasFromColumn(final SQLPropertyExpr column, final String aliasBase) {
+    public static SQLName removeAliasFromColumn(final SQLPropertyExpr column, final String aliasBase) {
         if (column.matchOwner(aliasBase)) {
             column.setOwner("");
         }
@@ -668,12 +675,15 @@ public final class SqlUtils {
      */
     public static String getColumnNameFromColumn(final SQLExpr column) {
         if (column instanceof SQLPropertyExpr) {
-            String[] splitedNestedField = ((SQLPropertyExpr)column).getName().split("\\.");
+            String[] splitedNestedField = ((SQLPropertyExpr) column).getName().split("\\.");
             if (splitedNestedField.length > 2) {
                 return String.join(".", Arrays.copyOfRange(splitedNestedField, 1, splitedNestedField.length));
             } else {
                 return splitedNestedField[splitedNestedField.length - 1];
             }
+        }
+        if (column instanceof SQLIdentifierExpr) {
+            return ((SQLIdentifierExpr) column).getName();
         }
         return "";
     }
@@ -696,15 +706,11 @@ public final class SqlUtils {
      * @param field the field
      * @return true if the expession would justify aggregation.
      */
-    public static boolean isAggregateExpression(final SQLExpr field) {
-        if (field instanceof SQLMethodInvokeExpr) {
-            SQLMethodInvokeExpr function = ((SQLMethodInvokeExpr) field);
-            String fieldForAgg = function.getMethodName().trim().toLowerCase();
-            return fieldForAgg.startsWith("sum(") || fieldForAgg.startsWith("avg(")
-                    || fieldForAgg.startsWith("min(") || fieldForAgg.startsWith("max(")
-                    || fieldForAgg.startsWith("count(");
-        }
-        return false;
+    public static boolean isAggregateExpression(final String field) {
+        String fieldForAgg = field.trim().toLowerCase();
+        return fieldForAgg.startsWith("sum(") || fieldForAgg.startsWith("avg(")
+                || fieldForAgg.startsWith("min(") || fieldForAgg.startsWith("max(")
+                || fieldForAgg.startsWith("count(");
     }
 
     /**
@@ -769,7 +775,7 @@ public final class SqlUtils {
      */
     public static boolean isTotalGroup(final List<SQLSelectItem> selectItems) {
         for (SQLSelectItem sitem : selectItems) {
-            if (isAggregateExpression(sitem.getExpr())) {
+            if (isAggregateExpression(sitem.getExpr().toString())) {
                 return true;
             }
         }

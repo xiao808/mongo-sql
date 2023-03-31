@@ -9,7 +9,7 @@ import com.alibaba.druid.sql.ast.statement.SQLSubqueryTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLTableSource;
 import com.github.xiao808.mongo.sql.FieldType;
 import com.github.xiao808.mongo.sql.ParseException;
-import com.github.xiao808.mongo.sql.QueryConverter;
+import com.github.xiao808.mongo.sql.QueryTransformer;
 import com.github.xiao808.mongo.sql.holder.ExpressionHolder;
 import com.github.xiao808.mongo.sql.holder.from.FromHolder;
 import com.github.xiao808.mongo.sql.holder.from.SQLCommandInfoHolder;
@@ -187,14 +187,14 @@ public final class JoinProcessor {
     /**
      * Create the aggregation pipeline steps needed to perform a join.
      *
-     * @param queryConverter  the {@link QueryConverter}
-     * @param tholder         the {@link FromHolder}
-     * @param ljoins          the list of joined tables
-     * @param whereExpression the where expression from the query
+     * @param queryTransformer the {@link QueryTransformer}
+     * @param tholder          the {@link FromHolder}
+     * @param ljoins           the list of joined tables
+     * @param whereExpression  the where expression from the query
      * @return the aggregation pipeline steps
      * @throws ParseException if there is an issue parsing the sql
      */
-    public static List<Document> toPipelineSteps(final QueryConverter queryConverter,
+    public static List<Document> toPipelineSteps(final QueryTransformer queryTransformer,
                                                  final FromHolder tholder, final List<SQLTableSource> ljoins,
                                                  final SQLExpr whereExpression)
             throws ParseException {
@@ -226,7 +226,7 @@ public final class JoinProcessor {
                     List<Document> subqueryDocs = new LinkedList<>();
 
                     if (tableSource.getRight() instanceof SQLSubqueryTableSource) {
-                        subqueryDocs = queryConverter.fromSQLCommandInfoHolderToAggregateSteps(
+                        subqueryDocs = queryTransformer.fromSQLCommandInfoHolderToAggregateSteps(
                                 (SQLCommandInfoHolder) tholder.getSQLHolder(tableSource.getRight()));
                     }
 

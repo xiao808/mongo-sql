@@ -9,7 +9,6 @@ import static org.apache.commons.lang.Validate.notNull;
 
 public class MongoDBQueryHolder {
     private final String collection;
-    private final SQLCommandType sqlCommandType;
     private Document query = new Document();
     private Document updateSet = new Document();
     private List<String> fieldsToUnset = new ArrayList<>();
@@ -32,13 +31,11 @@ public class MongoDBQueryHolder {
     /**
      * Pojo to hold the MongoDB data.
      *
-     * @param collection     the collection that the query will be run on.
-     * @param sqlCommandType the command type: like select or delete
+     * @param collection the collection that the query will be run on.
      */
-    public MongoDBQueryHolder(final String collection, final SQLCommandType sqlCommandType) {
+    public MongoDBQueryHolder(final String collection) {
         notNull(collection, "collection is null");
         this.collection = collection;
-        this.sqlCommandType = sqlCommandType;
     }
 
 
@@ -53,6 +50,7 @@ public class MongoDBQueryHolder {
 
     /**
      * get if distinct was used in the sql query.
+     *
      * @return true if distinct
      */
     public boolean isDistinct() {
@@ -61,6 +59,7 @@ public class MongoDBQueryHolder {
 
     /**
      * set if there is distinct used in the sql query.
+     *
      * @param distinct true if the query should be be distinct on a particular field
      */
     public void setDistinct(final boolean distinct) {
@@ -78,6 +77,7 @@ public class MongoDBQueryHolder {
 
     /**
      * set they query from the where clause in the sql statement.
+     *
      * @param query the query in the form of {@link Document}
      */
     public void setQuery(final Document query) {
@@ -88,6 +88,7 @@ public class MongoDBQueryHolder {
 
     /**
      * get the updateSet used for updates.
+     *
      * @return the updateSet
      */
     public Document getUpdateSet() {
@@ -95,8 +96,9 @@ public class MongoDBQueryHolder {
     }
 
     /**
-     *  set they updateSet which sets the fields to be updated.
-     *  @param updateSet the updateSet in the form of {@link Document}
+     * set they updateSet which sets the fields to be updated.
+     *
+     * @param updateSet the updateSet in the form of {@link Document}
      */
     public void setUpdateSet(final Document updateSet) {
         notNull(updateSet, "updateSet is null");
@@ -105,6 +107,7 @@ public class MongoDBQueryHolder {
 
     /**
      * get the updateSet used for updates.
+     *
      * @return the updateSet
      */
     public List<String> getFieldsToUnset() {
@@ -112,8 +115,9 @@ public class MongoDBQueryHolder {
     }
 
     /**
-     *  set they updateUnSet which sets the fields to be removed.
-     *  @param fieldsToUnset the updateUnSet in the form of {@link Document}
+     * set they updateUnSet which sets the fields to be removed.
+     *
+     * @param fieldsToUnset the updateUnSet in the form of {@link Document}
      */
     public void setFieldsToUnset(final List<String> fieldsToUnset) {
         notNull(fieldsToUnset, "updateUnSet is null");
@@ -134,6 +138,7 @@ public class MongoDBQueryHolder {
     /**
      * The column that is used in the distinct clause from the sql query or the projections
      * needed based on a group by sql statement.
+     *
      * @param projection the projection from the query based on the sql statement
      */
     public void setProjection(final Document projection) {
@@ -143,6 +148,7 @@ public class MongoDBQueryHolder {
 
     /**
      * get the sort information for this query.
+     *
      * @return the sort information for this query
      */
     public Document getSort() {
@@ -151,6 +157,7 @@ public class MongoDBQueryHolder {
 
     /**
      * Set the sort information from the query based on the sql statement.
+     *
      * @param sort the sort information from the query
      */
     public void setSort(final Document sort) {
@@ -160,6 +167,7 @@ public class MongoDBQueryHolder {
 
     /**
      * true if count(*) is used.
+     *
      * @return true if count(*) is used
      */
     public boolean isCountAll() {
@@ -168,6 +176,7 @@ public class MongoDBQueryHolder {
 
     /**
      * set to true if count(*) is used.
+     *
      * @param countAll true if count(*) is used
      */
     public void setCountAll(final boolean countAll) {
@@ -176,6 +185,7 @@ public class MongoDBQueryHolder {
 
     /**
      * Set the fields that are used to group on.
+     *
      * @param groupBys the fields that are used to group on
      */
     public void setGroupBys(final List<String> groupBys) {
@@ -184,6 +194,7 @@ public class MongoDBQueryHolder {
 
     /**
      * get the fields that are used to group on.
+     *
      * @return the fields that are used to group on.
      */
     public List<String> getGroupBys() {
@@ -192,6 +203,7 @@ public class MongoDBQueryHolder {
 
     /**
      * get the having clause from the sql query.
+     *
      * @return the having clause from the sql query
      */
     public Document getHaving() {
@@ -200,6 +212,7 @@ public class MongoDBQueryHolder {
 
     /**
      * set the having clause from the sql query.
+     *
      * @param having the having clause from the sql query
      */
     public void setHaving(final Document having) {
@@ -209,6 +222,7 @@ public class MongoDBQueryHolder {
 
     /**
      * get the projections needed when using aliases for columns.
+     *
      * @return the projections needed when using aliases for columns
      */
     public Document getAliasProjection() {
@@ -217,6 +231,7 @@ public class MongoDBQueryHolder {
 
     /**
      * set the projections needed when using aliases for columns.
+     *
      * @param aliasProjection the projections needed when using aliases for columns
      */
     public void setAliasProjection(final Document aliasProjection) {
@@ -225,6 +240,7 @@ public class MongoDBQueryHolder {
 
     /**
      * get the limit used in the sql query.
+     *
      * @return the limit
      */
     public long getLimit() {
@@ -233,6 +249,7 @@ public class MongoDBQueryHolder {
 
     /**
      * set the limit used from the sql query.
+     *
      * @param limit the limit used for the sql query
      */
     public void setLimit(final long limit) {
@@ -241,6 +258,7 @@ public class MongoDBQueryHolder {
 
     /**
      * get the offset from the sql query.
+     *
      * @return the offset from the sql query
      */
     public long getOffset() {
@@ -249,6 +267,7 @@ public class MongoDBQueryHolder {
 
     /**
      * set the offset from the sql query.
+     *
      * @param offset the offset from the sql query
      */
     public void setOffset(final long offset) {
@@ -256,15 +275,8 @@ public class MongoDBQueryHolder {
     }
 
     /**
-     * Get the {@link SQLCommandType} for this query.
-     * @return the sql command type
-     */
-    public SQLCommandType getSqlCommandType() {
-        return sqlCommandType;
-    }
-
-    /**
      * get the aggregation pipeline steps needed to perform a join.
+     *
      * @return the aggregation pipeline steps needed to perform a join
      */
     public List<Document> getJoinPipeline() {
@@ -273,6 +285,7 @@ public class MongoDBQueryHolder {
 
     /**
      * Set the aggregation pipeline steps needed to perform a join.
+     *
      * @param joinPipeline the aggregation pipeline steps needed to perform a join.
      */
     public void setJoinPipeline(final List<Document> joinPipeline) {
@@ -281,6 +294,7 @@ public class MongoDBQueryHolder {
 
     /**
      * Get the aggregation steps for this query.
+     *
      * @return the aggregation steps.
      */
     public List<Document> getPrevSteps() {
@@ -289,6 +303,7 @@ public class MongoDBQueryHolder {
 
     /**
      * Will set the aggregation steps for this query.
+     *
      * @param prevSteps the aggregation steps for this query
      */
     public void setPrevSteps(final List<Document> prevSteps) {
@@ -297,6 +312,7 @@ public class MongoDBQueryHolder {
 
     /**
      * Set ff some aggregation is required by this query.
+     *
      * @param requiresMultistepAggregation ture if this sql query requires aggregation
      */
     public void setRequiresMultistepAggregation(final boolean requiresMultistepAggregation) {
@@ -305,6 +321,7 @@ public class MongoDBQueryHolder {
 
     /**
      * if some aggregation is required by this query.
+     *
      * @return if some aggregation is required by this query.
      */
     public boolean isRequiresMultistepAggregation() {

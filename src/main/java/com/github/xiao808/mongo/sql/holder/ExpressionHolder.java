@@ -10,6 +10,7 @@ public class ExpressionHolder {
 
     /**
      * Default constructor.
+     *
      * @param expression the expression
      */
     public ExpressionHolder(final SQLExpr expression) {
@@ -18,6 +19,7 @@ public class ExpressionHolder {
 
     /**
      * get the expression.
+     *
      * @return the expression.
      */
     public SQLExpr getExpression() {
@@ -26,6 +28,7 @@ public class ExpressionHolder {
 
     /**
      * set the expression.
+     *
      * @param expression the expression
      */
     public void setExpression(final SQLExpr expression) {

@@ -8,6 +8,7 @@ public class SQLTableInfoHolder implements SQLInfoHolder {
 
     /**
      * Default constructor.
+     *
      * @param baseTable the base table
      */
     public SQLTableInfoHolder(final String baseTable) {
