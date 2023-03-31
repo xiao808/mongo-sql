@@ -35,8 +35,13 @@ import static org.bson.codecs.configuration.CodecRegistries.fromProviders;
 public final class MongoSqlExecutor {
 
     private static final CodecRegistry JACKSON_JSON_NODE_CODEC_REGISTRY = CodecRegistryHelper.createRegistry(
-            fromProviders(asList(new ValueCodecProvider(), new IterableCodecProvider(),
-                    new BsonValueCodecProvider(), new DocumentCodecProvider(), new MapCodecProvider(), new BsonObjectNodeCodecProvider())),
+            fromProviders(asList(
+                    new ValueCodecProvider(),
+                    new BsonValueCodecProvider(),
+                    new DocumentCodecProvider(),
+                    new MapCodecProvider(),
+                    new BsonObjectNodeCodecProvider(),
+                    new IterableCodecProvider())),
             UuidRepresentation.STANDARD);
 
     /**
@@ -56,9 +61,9 @@ public final class MongoSqlExecutor {
      * @param aggregationBatchSize    set the batch size for aggregation
      */
     public MongoSqlExecutor(final String sql,
-                             final DbType dbType,
-                             final boolean aggregationAllowDiskUse,
-                             final int aggregationBatchSize) {
+                            final DbType dbType,
+                            final boolean aggregationAllowDiskUse,
+                            final int aggregationBatchSize) {
         // empty sql is not permitted.
         if (StringUtils.isEmpty(sql)) {
             throw new IllegalArgumentException("sql to transform can not be null.");

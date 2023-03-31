@@ -18,7 +18,6 @@ public class BsonObjectNodeCodecProvider implements CodecProvider {
         if (clazz == ObjectNode.class) {
             return (Codec<T>) new BsonObjectNodeCodec();
         }
-        ;
         return null;
     }
 }

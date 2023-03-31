@@ -34,8 +34,8 @@ public class SqlSelectExecution implements SqlExecution {
         if (queryHolder.isDistinct()) {
             // select distinct
             ArrayNode result = new ArrayNode(JsonNodeFactory.instance);
-            DistinctIterable<ObjectNode> distinct = mongoCollection.distinct(getDistinctFieldName(queryHolder), queryHolder.getQuery(), ObjectNode.class);
-            for (JsonNode jsonNode : distinct) {
+            DistinctIterable<String> distinct = mongoCollection.distinct(getDistinctFieldName(queryHolder), queryHolder.getQuery(), String.class);
+            for (String jsonNode : distinct) {
                 result.add(jsonNode);
             }
             return result;
