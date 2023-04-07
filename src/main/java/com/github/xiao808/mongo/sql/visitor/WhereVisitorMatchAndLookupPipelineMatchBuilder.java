@@ -3,6 +3,7 @@ package com.github.xiao808.mongo.sql.visitor;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr;
 import com.alibaba.druid.sql.ast.expr.SQLBinaryOperator;
+import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
 import com.alibaba.druid.sql.ast.expr.SQLInListExpr;
 import com.alibaba.druid.sql.ast.expr.SQLNullExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
@@ -58,12 +59,21 @@ public class WhereVisitorMatchAndLookupPipelineMatchBuilder implements SQLASTVis
      */
     @Override
     public boolean visit(final SQLPropertyExpr column) {
+        column.setName(column.getName().replaceFirst("[`\"]", "").replaceAll("[`\"]$", ""));
         if (SqlUtils.isColumn(column)) {
             this.isBaseAliasOrValue = SqlUtils.isTableAliasOfColumn(column, this.baseAliasTable);
         }
         return false;
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public boolean visit(final SQLIdentifierExpr column) {
+        column.setName(column.getName().replaceFirst("[`\"]", "").replaceAll("[`\"]$", ""));
+        return false;
+    }
 
     /**
      * {@inheritDoc}

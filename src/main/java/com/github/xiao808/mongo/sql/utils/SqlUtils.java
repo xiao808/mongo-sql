@@ -24,6 +24,7 @@ import com.github.xiao808.mongo.sql.holder.AliasHolder;
 import com.github.xiao808.mongo.sql.processor.WhereClauseProcessor;
 import com.joestelmach.natty.DateGroup;
 import com.joestelmach.natty.Parser;
+import org.apache.commons.lang.StringUtils;
 import org.bson.Document;
 
 import java.math.BigInteger;
@@ -45,7 +46,6 @@ import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 
 public final class SqlUtils {
-    private static final Pattern SURROUNDED_IN_QUOTES = Pattern.compile("^\"(.+)*\"$");
     private static final Pattern LIKE_RANGE_REGEX = Pattern.compile("(\\[.+?\\])");
     private static final String REGEXMATCH_FUNCTION = "regexMatch";
     private static final String NOT_REGEXMATCH_FUNCTION = "notRegexMatch";
@@ -84,19 +84,11 @@ public final class SqlUtils {
         if (expression instanceof SQLValuableExpr) {
             return ((SQLValuableExpr) expression).getValue().toString();
         } else if (expression instanceof SQLIdentifierExpr) {
-            String columnName = ((SQLIdentifierExpr) expression).getName();
-            Matcher matcher = SURROUNDED_IN_QUOTES.matcher(columnName);
-            if (matcher.matches()) {
-                return matcher.group(1);
-            }
-            return columnName;
+            return ((SQLIdentifierExpr) expression).getName();
         } else if (expression instanceof SQLPropertyExpr) {
-            String columnName = expression.toString();
-            Matcher matcher = SURROUNDED_IN_QUOTES.matcher(columnName);
-            if (matcher.matches()) {
-                return matcher.group(1);
-            }
-            return columnName.startsWith(".") ? columnName.substring(1) : columnName;
+            SQLPropertyExpr expr = (SQLPropertyExpr) expression;
+            String columnName = expr.getName();
+            return StringUtils.isNotBlank(expr.getOwnerName()) ? expr.getOwnerName() + "." + columnName : columnName;
         }
         return expression.toString();
     }

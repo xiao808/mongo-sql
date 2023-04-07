@@ -12,7 +12,7 @@ public class SQLTableInfoHolder implements SQLInfoHolder {
      * @param baseTable the base table
      */
     public SQLTableInfoHolder(final String baseTable) {
-        this.baseTable = baseTable;
+        this.baseTable = baseTable.replaceFirst("[`\"]", "").replaceAll("[`\"]$", "");
     }
 
     /**

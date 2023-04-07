@@ -380,7 +380,7 @@ public final class SQLCommandInfoHolder implements SQLInfoHolder {
             isCountAll = SqlUtils.isCountAll(plainSelect.getSelectList());
 
             List<SQLTableSource> joinTables = new ArrayList<>();
-            if (from instanceof SQLJoinTableSource) {
+            while (from instanceof SQLJoinTableSource) {
                 joinTables.add(from);
                 from = ((SQLJoinTableSource) from).getLeft();
             }

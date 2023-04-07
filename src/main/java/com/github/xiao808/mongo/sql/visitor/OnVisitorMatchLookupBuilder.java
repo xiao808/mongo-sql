@@ -28,6 +28,7 @@ public class OnVisitorMatchLookupBuilder implements SQLASTVisitor {
      */
     @Override
     public boolean visit(final SQLPropertyExpr column) {
+        column.setName(column.getName().replaceFirst("[`\"]", "").replaceAll("[`\"]$", ""));
         if (SqlUtils.isColumn(column)) {
             String columnName;
             if (column.getResolvedTableSource() != null) {

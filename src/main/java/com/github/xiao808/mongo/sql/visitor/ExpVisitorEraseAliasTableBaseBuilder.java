@@ -1,6 +1,8 @@
 package com.github.xiao808.mongo.sql.visitor;
 
+import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
+import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
 import com.alibaba.druid.sql.visitor.SQLASTVisitor;
@@ -26,6 +28,7 @@ public class ExpVisitorEraseAliasTableBaseBuilder implements SQLASTVisitor {
      */
     @Override
     public boolean visit(final SQLPropertyExpr column) {
+        column.setName(column.getName().replaceFirst("[`\"]", "").replaceAll("[`\"]$", ""));
         SqlUtils.removeAliasFromColumn(column, baseAliasTable);
         return false;
     }
@@ -35,6 +38,15 @@ public class ExpVisitorEraseAliasTableBaseBuilder implements SQLASTVisitor {
      */
     @Override
     public boolean visit(final SQLSelectItem selectExpressionItem) {
+        SQLExpr expr = selectExpressionItem.getExpr();
+        if (expr instanceof SQLPropertyExpr) {
+            SQLPropertyExpr sqlPropertyExpr = (SQLPropertyExpr) expr;
+            sqlPropertyExpr.setName(sqlPropertyExpr.getName().replaceFirst("[`\"]", "").replaceAll("[`\"]$", ""));
+        }
+        if (expr instanceof SQLIdentifierExpr) {
+            SQLIdentifierExpr sqlPropertyExpr = (SQLIdentifierExpr) expr;
+            sqlPropertyExpr.setName(sqlPropertyExpr.getName().replaceFirst("[`\"]", "").replaceAll("[`\"]$", ""));
+        }
         SqlUtils.removeAliasFromSelectExpressionItem(selectExpressionItem, baseAliasTable);
         return false;
     }

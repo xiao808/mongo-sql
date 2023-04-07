@@ -38,6 +38,7 @@ public class OnVisitorLetsBuilder implements SQLASTVisitor {
             } else {
                 columnName = column.getName();
             }
+            columnName = columnName.replaceFirst("[`\"]", "").replaceAll("[`\"]$", "");
             onDocument.put(columnName.replace(".", "_").toLowerCase(), "$" + columnName);
         }
         return false;
