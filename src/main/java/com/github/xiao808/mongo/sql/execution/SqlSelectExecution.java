@@ -1,111 +1,203 @@
 package com.github.xiao808.mongo.sql.execution;
 
+import com.alibaba.druid.sql.ast.SQLLimit;
+import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
+import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
+import com.alibaba.druid.util.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.LongNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.github.xiao808.mongo.sql.InheritableThreadLocalMongoContextHolder;
-import com.github.xiao808.mongo.sql.MongoDBQueryHolder;
-import com.github.xiao808.mongo.sql.QueryTransformer;
-import com.github.xiao808.mongo.sql.holder.from.SQLCommandInfoHolder;
 import com.github.xiao808.mongo.sql.utils.SqlUtils;
 import com.mongodb.client.AggregateIterable;
 import com.mongodb.client.DistinctIterable;
-import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
+import org.bson.BsonDocument;
+import org.bson.BsonInt32;
+import org.bson.BsonInt64;
 import org.bson.Document;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+import static com.github.xiao808.mongo.sql.LexerConstants.GROUP;
+import static com.github.xiao808.mongo.sql.LexerConstants.LIMIT;
+import static com.github.xiao808.mongo.sql.LexerConstants.MATCH;
+import static com.github.xiao808.mongo.sql.LexerConstants.PROJECT;
+import static com.github.xiao808.mongo.sql.LexerConstants.ROOT;
+import static com.github.xiao808.mongo.sql.LexerConstants.SKIP;
+import static com.github.xiao808.mongo.sql.LexerConstants.SUM;
+import static com.github.xiao808.mongo.sql.MongoIdConstants.DOT;
+import static com.github.xiao808.mongo.sql.MongoIdConstants.EMPTY_STRING;
+import static com.github.xiao808.mongo.sql.MongoIdConstants.MONGO_ID;
+import static com.github.xiao808.mongo.sql.MongoIdConstants.REPRESENT_PAGE_TOTAL;
+
 /**
+ * select action for mongo
+ * support part of ANSI SQL
+ * 1.table join (just support left out join and inner join now)
+ * 2.group、having
+ * 3.sub query
+ * 4.some aggregate function
+ *
  * @author zengxiao
- * @description select action for mongo
  * @date 2023/3/22 15:44
+ * @see com.github.xiao808.mongo.sql.AggregateEnum
+ * @see com.github.xiao808.mongo.sql.LexerConstants
  * @since 1.0
  **/
-public class SqlSelectExecution implements SqlExecution {
+public class SqlSelectExecution extends AbstractSqlExecution {
+
+
+    /**
+     * whether disk can be used while aggregate
+     */
+    private final boolean aggregationAllowDiskUse;
+    /**
+     * batch row of aggregation.
+     */
+    private final int aggregationBatchSize;
+
+    public SqlSelectExecution(SQLSelectStatement sqlSelectStatement, boolean aggregationAllowDiskUse, int aggregationBatchSize) {
+        super(sqlSelectStatement);
+        this.aggregationAllowDiskUse = aggregationAllowDiskUse;
+        this.aggregationBatchSize = aggregationBatchSize;
+    }
 
     @Override
     public JsonNode execute(MongoDatabase mongoDatabase) {
-        QueryTransformer mongoContext = InheritableThreadLocalMongoContextHolder.getContext();
-        MongoDBQueryHolder queryHolder = mongoContext.getDBMongoQueryHolder();
-        SQLCommandInfoHolder sqlCommandInfoHolder = mongoContext.getSqlCommandInfoHolder();
-        MongoCollection<Document> mongoCollection = mongoDatabase.getCollection(queryHolder.getCollection());
-        if (queryHolder.isDistinct()) {
+        SQLSelectStatement selectStatement = (SQLSelectStatement) this.sqlStatement;
+        selectStatement.accept(sqlStatementTransformVisitor);
+        String tableName = sqlStatementTransformVisitor.getAggregationTableName(selectStatement);
+        MongoCollection<ObjectNode> collection = mongoDatabase.getCollection(tableName, ObjectNode.class);
+        if (sqlStatementTransformVisitor.isDistinct()) {
             // select distinct
-            ArrayNode result = new ArrayNode(JsonNodeFactory.instance);
-            DistinctIterable<String> distinct = mongoCollection.distinct(getDistinctFieldName(queryHolder), queryHolder.getQuery(), String.class);
-            for (String jsonNode : distinct) {
-                result.add(jsonNode);
-            }
-            return result;
-        } else if (sqlCommandInfoHolder.isCountAll() && !isAggregate(queryHolder, sqlCommandInfoHolder)) {
+            return new DistinctOperation().execute(selectStatement, collection);
+        } else if (sqlStatementTransformVisitor.isCountAll() && !sqlStatementTransformVisitor.isAggregate()) {
             // select count(*)
-            return new LongNode(mongoCollection.countDocuments(queryHolder.getQuery()));
-        } else if (isAggregate(queryHolder, sqlCommandInfoHolder)) {
-            // configuration for Insufficient memory when computing large amounts of data
-            Boolean aggregationAllowDiskUse = mongoContext.getAggregationAllowDiskUse();
-            Integer aggregationBatchSize = mongoContext.getAggregationBatchSize();
-            // for sub query、join、group
-            // select ... from ... left join ...
-            // select ... from ... group by
-            AggregateIterable<ObjectNode> aggregate = mongoCollection.aggregate(mongoContext.generateAggSteps(queryHolder, sqlCommandInfoHolder), ObjectNode.class);
-            if (aggregationAllowDiskUse != null) {
-                aggregate.allowDiskUse(aggregationAllowDiskUse);
-            }
-            if (aggregationBatchSize != null) {
-                aggregate.batchSize(aggregationBatchSize);
-            }
-            ArrayNode result = new ArrayNode(JsonNodeFactory.instance);
-            for (JsonNode jsonNode : aggregate) {
-                result.add(jsonNode);
-            }
-            return result;
+            return new CountOperation().execute(selectStatement, collection);
         } else {
-            // for single table query
-            // select ... from ... where ....
-            FindIterable<ObjectNode> findIterable = mongoCollection.find(queryHolder.getQuery(), ObjectNode.class)
-                    .projection(queryHolder.getProjection());
-            if (queryHolder.getSort() != null && queryHolder.getSort().size() > 0) {
-                findIterable.sort(queryHolder.getSort());
+            // aggregation
+            return new AggregateOperation().execute(selectStatement, collection);
+        }
+    }
+
+    /**
+     * distinct
+     */
+    class DistinctOperation {
+
+        public JsonNode execute(SQLSelectStatement selectStatement, MongoCollection<ObjectNode> collection) {
+            SQLSelectQueryBlock queryBlock = selectStatement.getSelect().getQueryBlock();
+            String tableAlias = queryBlock.getFrom().getAlias();
+            Document filter = sqlStatementTransformVisitor.getWhere(queryBlock.getWhere());
+            String distinctField = sqlStatementTransformVisitor.getDistinctField().replace(tableAlias + DOT, EMPTY_STRING);
+            if (filter != null && !filter.isEmpty()) {
+                filter = Document.parse(filter.toJson().replace(tableAlias + DOT, EMPTY_STRING));
             }
-            if (queryHolder.getOffset() != -1) {
-                findIterable.skip((int) queryHolder.getOffset());
-            }
-            if (queryHolder.getLimit() != -1) {
-                findIterable.limit((int) queryHolder.getLimit());
-            }
+            DistinctIterable<String> distinctIterable = collection.distinct(distinctField, filter, String.class);
             ArrayNode result = new ArrayNode(JsonNodeFactory.instance);
-            for (JsonNode jsonNode : findIterable) {
-                result.add(jsonNode);
+            for (String data : distinctIterable) {
+                result.add(data);
             }
             return result;
         }
     }
 
     /**
-     * whether sql is aggregation
-     *
-     * @param mongoQueryHolder     mongo query holder
-     * @param sqlCommandInfoHolder sql command info holder
-     * @return if the sql is aggregation
+     * aggregation
      */
-    private boolean isAggregate(final MongoDBQueryHolder mongoQueryHolder, final SQLCommandInfoHolder sqlCommandInfoHolder) {
-        return (sqlCommandInfoHolder.getAliasHolder() != null
-                && !sqlCommandInfoHolder.getAliasHolder().isEmpty())
-                || sqlCommandInfoHolder.getGroupBys().size() > 0
-                || (sqlCommandInfoHolder.getJoins() != null && sqlCommandInfoHolder.getJoins().size() > 0)
-                || (mongoQueryHolder.getPrevSteps() != null && !mongoQueryHolder.getPrevSteps().isEmpty())
-                || (sqlCommandInfoHolder.isTotalGroup() && !SqlUtils.isCountAll(sqlCommandInfoHolder.getSelectItems()));
+    class AggregateOperation {
+
+        public JsonNode execute(SQLSelectStatement selectStatement, MongoCollection<ObjectNode> collection) {
+            SQLSelectQueryBlock queryBlock = selectStatement.getSelect().getQueryBlock();
+            SQLLimit limit = queryBlock.getLimit();
+            List<Document> aggregation = sqlStatementTransformVisitor.getAggregation(selectStatement);
+            AggregateIterable<ObjectNode> aggregate = collection.aggregate(aggregation)
+                    .allowDiskUse(aggregationAllowDiskUse)
+                    .batchSize(aggregationBatchSize);
+            return Objects.nonNull(limit) ? unwrapPaginationResult(aggregate) : unwrapResult(aggregate);
+        }
+
+        /**
+         * unwrap result
+         *
+         * @param aggregate aggregation result iterable
+         * @return aggregate result
+         */
+        private ArrayNode unwrapResult(AggregateIterable<ObjectNode> aggregate) {
+            ArrayNode result = new ArrayNode(JsonNodeFactory.instance);
+            for (ObjectNode node : aggregate) {
+                result.add(node);
+            }
+            return result;
+        }
+
+        /**
+         * unwrap result
+         *
+         * @param aggregate aggregation result iterable
+         * @return aggregate result
+         */
+        private ObjectNode unwrapPaginationResult(AggregateIterable<ObjectNode> aggregate) {
+            try (MongoCursor<ObjectNode> cursor = aggregate.iterator()) {
+                return cursor.hasNext() ? cursor.next() : new ObjectNode(JsonNodeFactory.instance);
+            }
+        }
     }
 
     /**
-     * get distinct column name
-     *
-     * @param mongoQueryHolder mongo query holder
-     * @return distinct column name
+     * select count(*)
      */
-    private String getDistinctFieldName(final MongoDBQueryHolder mongoQueryHolder) {
-        return mongoQueryHolder.getProjection().keySet().iterator().next();
+    class CountOperation {
+
+        public LongNode execute(SQLSelectStatement selectStatement, MongoCollection<ObjectNode> collection) {
+            SQLSelectQueryBlock queryBlock = selectStatement.getSelect().getQueryBlock();
+            String alias = queryBlock.getFrom().getAlias();
+            SQLLimit limit = queryBlock.getLimit();
+            List<Document> aggregation = new ArrayList<>();
+            if (!StringUtils.isEmpty(alias)) {
+                aggregation.add(new Document(PROJECT, new Document(Map.of(alias, ROOT, MONGO_ID, 0))));
+            }
+            Document filter = sqlStatementTransformVisitor.getWhere(queryBlock.getWhere());
+            aggregation.add(new Document(MATCH, filter != null ? filter : new BsonDocument()));
+            if (Objects.nonNull(limit)) {
+                Long skip = (Long) SqlUtils.getRealValue(limit.getOffset());
+                Long size = (Long) SqlUtils.getRealValue(limit.getRowCount());
+                if (Objects.nonNull(skip) && skip > 0) {
+                    aggregation.add(new Document(SKIP, new BsonInt64(skip)));
+                }
+                if (Objects.nonNull(size) && size > 0) {
+                    aggregation.add(new Document(LIMIT, new BsonInt64(size)));
+                }
+            }
+            aggregation.add(new Document(GROUP, new Document(MONGO_ID, new BsonInt32(1))
+                    .append(REPRESENT_PAGE_TOTAL, new Document(SUM, new BsonInt32(1)))));
+            try (MongoCursor<ObjectNode> cursor = collection.aggregate(aggregation)
+                    .allowDiskUse(aggregationAllowDiskUse)
+                    .batchSize(aggregationBatchSize)
+                    .iterator()) {
+                return new LongNode(cursor.hasNext() ? unwrapResult(cursor.next()) : 0);
+            }
+        }
+
+        /**
+         * unwrap result
+         *
+         * @param result aggregation result
+         * @return count result
+         */
+        private Long unwrapResult(final ObjectNode result) {
+            if (result == null || result.isEmpty()) {
+                return 0L;
+            } else {
+                return result.get(REPRESENT_PAGE_TOTAL).longValue();
+            }
+        }
     }
 }

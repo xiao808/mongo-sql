@@ -1,19 +1,15 @@
 package com.github.xiao808.mongo.sql;
 
 import com.alibaba.druid.DbType;
+import com.alibaba.druid.sql.SQLUtils;
+import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.util.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.github.xiao808.mongo.sql.codec.BsonObjectNodeCodecProvider;
-import com.github.xiao808.mongo.sql.execution.SqlExecution;
-import com.mongodb.ReadConcern;
-import com.mongodb.ReadPreference;
-import com.mongodb.WriteConcern;
-import com.mongodb.client.ClientSession;
+import com.github.xiao808.mongo.sql.execution.AbstractSqlExecution;
 import com.mongodb.client.MongoDatabase;
-import com.mongodb.client.internal.MongoDatabaseImpl;
-import com.mongodb.client.internal.OperationExecutor;
-import com.mongodb.internal.operation.ReadOperation;
-import com.mongodb.internal.operation.WriteOperation;
+import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
 import org.bson.UuidRepresentation;
 import org.bson.codecs.BsonValueCodecProvider;
 import org.bson.codecs.DocumentCodecProvider;
@@ -23,17 +19,39 @@ import org.bson.codecs.ValueCodecProvider;
 import org.bson.codecs.configuration.CodecRegistry;
 import org.bson.internal.CodecRegistryHelper;
 
+import java.util.Optional;
+
 import static java.util.Arrays.asList;
 import static org.bson.codecs.configuration.CodecRegistries.fromProviders;
 
 /**
+ * sql -> mongo bson converter
+ *
  * @author zengxiao
- * @description sql -> mongo bson converter
  * @date 2023/3/22 11:47
  * @since 1.0
  **/
+@Slf4j
 public final class MongoSqlExecutor {
 
+    /**
+     * sql statement parsed by druid
+     */
+    private final SQLStatement sqlStatement;
+
+    /**
+     * whether disk can be used while aggregate.
+     */
+    private final boolean aggregationAllowDiskUse;
+
+    /**
+     * batch row of aggregation.
+     */
+    private final int aggregationBatchSize;
+
+    /**
+     * codec support for jackson
+     */
     private static final CodecRegistry JACKSON_JSON_NODE_CODEC_REGISTRY = CodecRegistryHelper.createRegistry(
             fromProviders(asList(
                     new ValueCodecProvider(),
@@ -73,66 +91,45 @@ public final class MongoSqlExecutor {
         if (actualAggregationBatchSize < 0) {
             actualAggregationBatchSize = 1000;
         }
-        try {
-            // initialize converter for current execution.
-            QueryTransformer context = new QueryTransformer.Builder()
-                    .sql(sql)
-                    .dbType(dbType)
-                    .aggregationBatchSize(actualAggregationBatchSize)
-                    .aggregationAllowDiskUse(aggregationAllowDiskUse)
-                    .build();
-            InheritableThreadLocalMongoContextHolder.setContext(context);
-        } catch (ParseException e) {
-            throw new RuntimeException(e);
-        }
+        this.sqlStatement = SQLUtils.parseSingleStatement(sql, dbType);
+        this.aggregationAllowDiskUse = aggregationAllowDiskUse;
+        this.aggregationBatchSize = actualAggregationBatchSize;
     }
 
+    /**
+     * execute sql with target mongo database
+     *
+     * @param mongoDatabase mongo database
+     * @return result of sql execution
+     */
     public JsonNode execute(MongoDatabase mongoDatabase) {
-        // get sql execution
-        SqlExecution execution = SqlExecution.getInstance();
-        // communicate with mongodb and gain the result.
-        return execution.execute(mongoDatabase.withCodecRegistry(JACKSON_JSON_NODE_CODEC_REGISTRY));
+        return this.execute(mongoDatabase, JACKSON_JSON_NODE_CODEC_REGISTRY);
     }
 
-    public static void main(String[] args) {
-        MongoDatabaseImpl mongoDatabase = new MongoDatabaseImpl(
-                "test",
-                JACKSON_JSON_NODE_CODEC_REGISTRY,
-                ReadPreference.primary(),
-                WriteConcern.ACKNOWLEDGED,
-                false,
-                false,
-                ReadConcern.DEFAULT,
-                UuidRepresentation.STANDARD,
-                new OperationExecutor() {
-                    @Override
-                    public <T> T execute(ReadOperation<T> operation, ReadPreference readPreference, ReadConcern readConcern) {
-                        return null;
-                    }
-
-                    @Override
-                    public <T> T execute(WriteOperation<T> operation, ReadConcern readConcern) {
-                        return null;
-                    }
-
-                    @Override
-                    public <T> T execute(ReadOperation<T> operation, ReadPreference readPreference, ReadConcern readConcern, ClientSession session) {
-                        return null;
-                    }
-
-                    @Override
-                    public <T> T execute(WriteOperation<T> operation, ReadConcern readConcern, ClientSession session) {
-                        return null;
-                    }
+    /**
+     * execute sql with target mongo database
+     *
+     * @param mongoDatabase mongo database
+     * @param codecRegistry codec for execution result
+     * @return result of sql execution
+     */
+    public JsonNode execute(MongoDatabase mongoDatabase, CodecRegistry codecRegistry) {
+        // get sql execution
+        AbstractSqlExecution execution = null;
+        try {
+            execution = AbstractSqlExecution.getInstance(sqlStatement, aggregationAllowDiskUse, aggregationBatchSize);
+            // communicate with mongodb and gain the result.
+            return execution.execute(mongoDatabase.withCodecRegistry(codecRegistry));
+        } catch (Exception e) {
+            log.error("parse sql and execute exceptionally", e);
+            throw new RuntimeException(e);
+        } finally {
+            Optional.ofNullable(execution).ifPresent(abstractSqlExecution -> {
+                Document document = abstractSqlExecution.getSqlStatementTransformVisitor().getDocument(sqlStatement);
+                if (!document.isEmpty()) {
+                    log.info(document.toJson());
                 }
-        );
-//        String select = "select distinct(e.id), s.id, count(*) as cn from (select * from student where exam_id = 1) s left join exam e on s.exam_id = e.id where e.id is not null and name not like '%123%' group by e.id, s.id order by cn desc limit 10, 10";
-//        new MongoSqlExecutor(select, DbType.mysql, true, 2000).execute(mongoDatabase);
-//        String update = "update student set seat_no = 1, name = 1 where id = 1";
-//        new MongoSqlExecutor(update, DbType.mysql, true, 2000).execute(mongoDatabase);
-        String insert = "insert into exam (id, name, age) values (1, 1, 1), (2, 2, 2)";
-        new MongoSqlExecutor(insert, DbType.mysql, true, 2000).execute(mongoDatabase);
-        String delete = "delete from exam where id = 1 and age = 1";
-        new MongoSqlExecutor(delete, DbType.mysql, true, 2000).execute(mongoDatabase);
+            });
+        }
     }
 }

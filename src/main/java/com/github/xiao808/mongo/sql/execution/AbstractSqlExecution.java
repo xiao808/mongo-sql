@@ -6,47 +6,56 @@ import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
 import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.github.xiao808.mongo.sql.InheritableThreadLocalMongoContextHolder;
-import com.github.xiao808.mongo.sql.QueryTransformer;
+import com.github.xiao808.mongo.sql.visitor.SqlStatementTransformVisitor;
 import com.mongodb.client.MongoDatabase;
 
 import java.util.Objects;
 
 /**
+ * sql execution interface
+ *
  * @author zengxiao
- * @description sql执行接口
  * @date 2023/3/22 15:45
  * @since 1.0
  **/
-public interface SqlExecution {
+public abstract class AbstractSqlExecution {
+
+    protected SQLStatement sqlStatement;
+
+    protected SqlStatementTransformVisitor sqlStatementTransformVisitor = new SqlStatementTransformVisitor();
+
+    public AbstractSqlExecution(SQLStatement sqlStatement) {
+        this.sqlStatement = sqlStatement;
+    }
+
+    public static <T> AbstractSqlExecution getInstance(SQLStatement sqlStatement) {
+        return AbstractSqlExecution.getInstance(sqlStatement, true, 2000);
+    }
 
     /**
      * sql execution factory
      *
      * @return sql execution
      */
-    static <T> SqlExecution getInstance() {
-        // get current mongo context
-        QueryTransformer mongoContext = InheritableThreadLocalMongoContextHolder.getContext();
-        SQLStatement sqlStatement = mongoContext.getSqlStatement();
+    public static <T> AbstractSqlExecution getInstance(SQLStatement sqlStatement, boolean aggregationAllowDiskUse, int aggregationBatchSize) {
         // can not be parsed whiling SQLStatement is null.
         Objects.requireNonNull(sqlStatement, "empty mongo context for execution.");
         // according to SQLStatement type gain the special sql execution.
         if (sqlStatement instanceof SQLSelectStatement) {
             // for select
-            return new SqlSelectExecution();
+            return new SqlSelectExecution((SQLSelectStatement) sqlStatement, aggregationAllowDiskUse, aggregationBatchSize);
         }
         if (sqlStatement instanceof SQLInsertStatement) {
             // for insert
-            return new SqlInsertExecution();
+            return new SqlInsertExecution((SQLInsertStatement) sqlStatement);
         }
         if (sqlStatement instanceof SQLUpdateStatement) {
             // for update
-            return new SqlUpdateExecution();
+            return new SqlUpdateExecution((SQLUpdateStatement) sqlStatement);
         }
         if (sqlStatement instanceof SQLDeleteStatement) {
             // for delete
-            return new SqlDeleteExecution();
+            return new SqlDeleteExecution((SQLDeleteStatement) sqlStatement);
         }
         throw new IllegalArgumentException("illegal mongo context for execution.");
     }
@@ -57,5 +66,14 @@ public interface SqlExecution {
      * @param mongoDatabase mongo database
      * @return execute result
      */
-    JsonNode execute(MongoDatabase mongoDatabase);
+    public abstract JsonNode execute(MongoDatabase mongoDatabase);
+
+    /**
+     * get sql statement transform visitor
+     *
+     * @return sql statement transform visitor
+     */
+    public SqlStatementTransformVisitor getSqlStatementTransformVisitor() {
+        return sqlStatementTransformVisitor;
+    }
 }

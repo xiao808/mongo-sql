@@ -6,8 +6,10 @@ import org.bson.codecs.configuration.CodecProvider;
 import org.bson.codecs.configuration.CodecRegistry;
 
 /**
+ * provider of codec for jackson
+ * only ObjectNode is supported.
+ *
  * @author zengxiao
- * @description
  * @date 2023/3/30 18:01
  * @since 1.0
  **/
