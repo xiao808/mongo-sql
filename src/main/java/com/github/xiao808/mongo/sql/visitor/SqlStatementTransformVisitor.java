@@ -98,7 +98,6 @@ import static com.github.xiao808.mongo.sql.MongoIdConstants.CHAR_WILL_BE_REMOVED
 import static com.github.xiao808.mongo.sql.MongoIdConstants.DOLLAR;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.DOT;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.EMPTY_STRING;
-import static com.github.xiao808.mongo.sql.MongoIdConstants.LEFT_TABLE_ALIAS_OF_ON_CONDITION;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.MONGO_ID;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.ON_CONDITION;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.REGEX_START_WITH;
@@ -106,9 +105,11 @@ import static com.github.xiao808.mongo.sql.MongoIdConstants.REPLACED_BY_UNDERLIN
 import static com.github.xiao808.mongo.sql.MongoIdConstants.REPRESENT_MONGO_ID;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.REPRESENT_PAGE_DATA;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.REPRESENT_PAGE_TOTAL;
+import static com.github.xiao808.mongo.sql.MongoIdConstants.RIGHT_TABLE_ALIAS_OF_ON_CONDITION;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.SUB_QUERY_ALIAS_PLACEHOLDER;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.SUB_QUERY_BASE_ALIAS_PLACEHOLDER;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.UNDERLINE;
+import static com.github.xiao808.mongo.sql.MongoIdConstants.WHERE_CONDITION_TABLE_SOURCE;
 
 /**
  * remove quota of select items and condition column
@@ -289,12 +290,11 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
         // for main table which is sub query
         if (rootTableSource instanceof SQLSubqueryTableSource) {
             Document subQuery = mapping.get(((SQLSubqueryTableSource) rootTableSource).getSelect());
-            String tableAlias = subQuery.getString(SUB_QUERY_ALIAS_PLACEHOLDER);
             mainTableName = subQuery.getString(FROM);
             String baseAlias = subQuery.getString(SUB_QUERY_BASE_ALIAS_PLACEHOLDER);
             List<Document> subQueryAggregateList = subQuery.getList(UNDERLINE, Document.class);
             result.addAll(subQueryAggregateList.stream()
-                    .map(d -> replaceAliasForDocument(d, baseAlias, tableAlias)).collect(Collectors.toList()));
+                    .map(d -> removeAliasForSubQueryDocument(d, baseAlias)).collect(Collectors.toList()));
         } else {
             mainTableName = ((SQLExprTableSource) rootTableSource).getTableName();
         }
@@ -324,7 +324,6 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
             lookup.put(FROM, tableName);
 
             List<Document> subQueryAggregateList = subQuery.getList(UNDERLINE, Document.class);
-            boolean isJoin = false;
             List<Document> partialAggregateList = new ArrayList<>();
             List<Document> pagination = new ArrayList<>();
             for (Document d : subQueryAggregateList) {
@@ -336,32 +335,20 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
                     pagination.add(d);
                     continue;
                 }
-                // for condition clause, at the same order
-                // for sub query inner table alias may be not match with it`s alias of sub query
-                // $ROOT has been used by top level, so replace inner table alias with alias of sub query
-                // table alias contains to part:
+                // for sub query, it must be the pipeline of lookup document and $$ROOT has been used by top level
+                // at this time, alias can not be recognized, so remove it.
+                // table alias contains two part:
                 // 1.field eg: $alias.field
-                // 2.variable eg: alias_field
-                Document aliasChangedDocument = replaceAliasForDocument(d, baseAlias, tableAlias);
-                if (!isJoin && Objects.nonNull(d.get(LOOKUP))) {
-                    // for sub query having join, lookup clause should be first.
-                    isJoin = true;
-                }
-                partialAggregateList.add(aliasChangedDocument);
+                // 2.variable eg: alias_field, it is no need to handle it.
+                Document aliasRemovedDocument = removeAliasForSubQueryDocument(d, baseAlias);
+                partialAggregateList.add(aliasRemovedDocument);
             }
             List<Document> aggregateList = new ArrayList<>();
             List<Document> pipeline = lookup.getList(PIPELINE, Document.class);
-            if (isJoin) {
-                // add sub query aggregation.
-                aggregateList.addAll(partialAggregateList);
-                // add join condition
-                aggregateList.addAll(pipeline);
-            } else {
-                // add join condition
-                aggregateList.addAll(pipeline);
-                // add sub query aggregation.
-                aggregateList.addAll(partialAggregateList);
-            }
+            // add sub query aggregation.
+            aggregateList.addAll(partialAggregateList);
+            // add join condition
+            aggregateList.addAll(pipeline);
             // add pagination
             aggregateList.addAll(pagination);
             lookup.put(PIPELINE, aggregateList);
@@ -369,11 +356,13 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
         }
     }
 
-    private Document replaceAliasForDocument(Document d, String baseAlias, String tableAlias) {
+    private Document removeAliasForSubQueryDocument(Document d, String baseAlias) {
+        if (StringUtils.isEmpty(baseAlias)) {
+            return d;
+        }
         return Document.parse(
                 d.toJson()
-                        .replace(DOLLAR + baseAlias + DOT, DOLLAR + tableAlias + DOT)
-                        .replace(baseAlias + UNDERLINE, tableAlias + UNDERLINE)
+                        .replace(DOLLAR + baseAlias + DOT, DOLLAR)
         );
     }
 
@@ -469,6 +458,28 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
      */
     @Override
     public boolean visit(SQLSelectQueryBlock x) {
+        List<SQLSelectItem> selectList = x.getSelectList();
+        SQLTableSource from = x.getFrom();
+        while (from instanceof SQLJoinTableSource) {
+            from = ((SQLJoinTableSource) from).getLeft();
+        }
+        SQLTableSource resolvedTableSource = from;
+        if (!StringUtils.isEmpty(from.getAlias())) {
+            // field without alias will be related with first table.
+            selectList.stream()
+                    // field without alias
+                    .filter(sqlSelectItem -> sqlSelectItem.getExpr() instanceof SQLIdentifierExpr)
+                    // related with first table
+                    .forEach(sqlSelectItem -> ((SQLIdentifierExpr) sqlSelectItem.getExpr()).setResolvedTableSource(resolvedTableSource));
+            // add alias for SqlIdentifierExpr in group by clause
+            Optional.ofNullable(x.getGroupBy()).ifPresent(group -> group.putAttribute(WHERE_CONDITION_TABLE_SOURCE, resolvedTableSource));
+            // add alias for SqlIdentifierExpr in where condition
+            Optional.ofNullable(x.getWhere()).ifPresent(where -> where.putAttribute(WHERE_CONDITION_TABLE_SOURCE, resolvedTableSource));
+            // add alias for SqlIdentifierExpr in order by
+            Optional.ofNullable(x.getOrderBy()).ifPresent(orderBy -> orderBy.getItems().stream()
+                    .filter(sort -> sort.getExpr() instanceof SQLIdentifierExpr)
+                    .forEach(sort -> ((SQLIdentifierExpr) sort.getExpr()).setResolvedTableSource(resolvedTableSource)));
+        }
         return true;
     }
 
@@ -509,20 +520,23 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
         }
 
         SQLSelectGroupByClause groupBy = x.getGroupBy();
+        List<SQLSelectItem> selectList = x.getSelectList();
         // when group clause is present, have to add groupBy variable and replace dot with underline.
         String groupByPrefix = DOLLAR;
         if (Objects.nonNull(groupBy)) {
-            documentList.add(mapping.get(groupBy));
             groupByPrefix += MONGO_ID + DOT;
         }
-
+        // generate group by according to aggregate function in select item list and group by clause
+        Document group = parseGroupBy(selectList, groupBy);
+        if (Objects.nonNull(group)) {
+            documentList.add(group);
+        }
         // order by clause
         SQLOrderBy orderBy = x.getOrderBy();
         if (Objects.nonNull(orderBy)) {
             documentList.add(mapping.get(orderBy));
         }
 
-        List<SQLSelectItem> selectList = x.getSelectList();
         // format result data using project.
         documentList.addAll(parseProject(selectList, groupByPrefix, tableAliasList, isRootStatement));
 
@@ -547,6 +561,36 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
             query.put(SUB_QUERY_ALIAS_PLACEHOLDER, ((SQLSubqueryTableSource) grand).getAlias());
         }
         mapping.put(x, query);
+    }
+
+    /**
+     * parse group by and then generate group by information according to the sql select item list and group by clause.
+     *
+     * @param selectList sql select item list
+     * @param groupBy    group by clause
+     * @return group by information
+     */
+    private Document parseGroupBy(List<SQLSelectItem> selectList, SQLSelectGroupByClause groupBy) {
+        Document groupDocument = mapping.get(groupBy);
+        Map<String, Object> aggregateMap = selectList.stream()
+                .filter(sqlSelectItem -> sqlSelectItem.getExpr() instanceof SQLAggregateExpr)
+                .collect(Collectors.toMap(
+                        sqlSelectItem -> !StringUtils.isEmpty(sqlSelectItem.getAlias()) ? sqlSelectItem.getAlias() : sqlSelectItem.getExpr().toString(),
+                        sqlSelectItem -> {
+                            SQLAggregateExpr aggregateExpr = (SQLAggregateExpr) sqlSelectItem.getExpr();
+                            return aggregateMapping.getOrDefault(aggregateExpr, new Document());
+                        }
+                ));
+        if (Objects.nonNull(groupDocument)) {
+            groupDocument.putAll(aggregateMap);
+        } else {
+            groupDocument = new Document(aggregateMap);
+        }
+        if (groupDocument.isEmpty()) {
+            // do not need grouping by clause
+            return null;
+        }
+        return new Document(GROUP, Map.of(MONGO_ID, groupDocument));
     }
 
     /**
@@ -580,7 +624,16 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
                     })
                     .collect(Collectors.toMap(
                             sqlSelectItem -> !StringUtils.isEmpty(sqlSelectItem.getAlias()) ? sqlSelectItem.getAlias() : ((SQLName) sqlSelectItem.getExpr()).getSimpleName(),
-                            sqlSelectItem -> sqlSelectItem.getExpr().toString()
+                            sqlSelectItem -> {
+                                SQLExpr expr = sqlSelectItem.getExpr();
+                                String exprString = expr.toString();
+                                if (expr instanceof SQLIdentifierExpr && Objects.nonNull(((SQLIdentifierExpr) expr).getResolvedTableSource())) {
+                                    // for query like select name from student s left join exam e on ...
+                                    // add alias of first table
+                                    exprString = ((SQLIdentifierExpr) expr).getResolvedTableSource().getAlias() + DOT + exprString;
+                                }
+                                return exprString;
+                            }
                     ));
             Map<String, SQLAggregateExpr> selectAggregateItemMap = selectList.stream()
                     .filter(sqlSelectItem -> sqlSelectItem.getExpr() instanceof SQLAggregateExpr)
@@ -598,15 +651,9 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
                 projectItemMap.put(entry.getKey(), newValue);
             }
             for (Map.Entry<String, SQLAggregateExpr> entry : selectAggregateItemMap.entrySet()) {
+                // aggregate method expression will be added to group by
                 String selectItemAlias = entry.getKey();
-                SQLAggregateExpr aggregateExpr = entry.getValue();
-                Document finalAggregateDocument = aggregateMapping.getOrDefault(aggregateExpr, new Document());
-                if (!DOLLAR.equals(groupByPrefix)) {
-                    // for group
-                    SQLExpr sqlExpr = aggregateExpr.getArguments().get(0);
-                    finalAggregateDocument = Document.parse(finalAggregateDocument.toJson().replace(DOLLAR + sqlExpr.toString(), groupByPrefix + sqlExpr.toString().replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE)));
-                }
-                projectItemMap.put(selectItemAlias, finalAggregateDocument);
+                projectItemMap.put(selectItemAlias, groupByPrefix + selectItemAlias);
             }
         }
         // select *
@@ -668,7 +715,7 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
         right.accept(this);
         SQLJoinTableSource.JoinType joinType = x.getJoinType();
         SQLExpr condition = x.getCondition();
-        condition.putAttribute(LEFT_TABLE_ALIAS_OF_ON_CONDITION, left.getAlias());
+        condition.putAttribute(RIGHT_TABLE_ALIAS_OF_ON_CONDITION, right.getAlias());
         condition.putAttribute(ON_CONDITION, right);
         letOfOnCondition.put(right, new Document());
         condition.accept(this);
@@ -751,11 +798,24 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
     @Override
     public boolean visit(SQLSelectGroupByClause x) {
         List<SQLExpr> items = x.getItems();
-        Map<String, String> groupMap = items.stream()
+        for (Map.Entry<String, Object> entry : x.getAttributes().entrySet()) {
+            items.forEach(sqlExpr -> sqlExpr.putAttribute(entry.getKey(), entry.getValue()));
+        }
+        Document groupDocument = new Document();
+        items.stream()
                 .peek(sqlExpr -> sqlExpr.accept(this))
-                .map(Objects::toString)
-                .collect(Collectors.toMap(s -> s.replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE), s -> DOLLAR + s));
-        mapping.put(x, new Document(GROUP, new Document(Map.of(MONGO_ID, groupMap))));
+                .map(expr -> {
+                    SQLTableSource resolvedTableSource;
+                    String fieldString;
+                    if (expr instanceof SQLIdentifierExpr && Objects.nonNull(resolvedTableSource = ((SQLIdentifierExpr) expr).getResolvedTableSource())) {
+                        fieldString = resolvedTableSource.getAlias() + DOT + expr;
+                    } else {
+                        fieldString = expr.toString();
+                    }
+                    return fieldString;
+                })
+                .forEach(s -> groupDocument.put(s.replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE), DOLLAR + s));
+        mapping.put(x, groupDocument);
         SQLExpr having = x.getHaving();
         if (Objects.nonNull(having)) {
             having.accept(this);
@@ -778,10 +838,18 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
             SQLExpr expr = item.getExpr();
             expr.accept(this);
             SQLOrderingSpecification type = item.getType();
-            if (!(expr instanceof SQLMethodInvokeExpr)) {
+            if (expr instanceof SQLPropertyExpr) {
                 String sortField = expr.toString();
                 sortItems.put(hasGroup ? DOLLAR + MONGO_ID + DOT + sortField : sortField, type == SQLOrderingSpecification.ASC ? 1 : -1);
-            } else {
+            } else if (expr instanceof SQLIdentifierExpr) {
+                String sortField = expr.toString();
+                SQLTableSource resolvedTableSource = ((SQLIdentifierExpr) expr).getResolvedTableSource();
+                if (Objects.nonNull(resolvedTableSource)) {
+                    // add alias.
+                    sortField = resolvedTableSource.getAlias() + DOT + sortField;
+                }
+                sortItems.put(hasGroup ? DOLLAR + MONGO_ID + DOT + sortField : sortField, type == SQLOrderingSpecification.ASC ? 1 : -1);
+            } else if (expr instanceof SQLMethodInvokeExpr) {
                 SQLMethodInvokeExpr function = (SQLMethodInvokeExpr) expr;
                 String sortKey = parseFunction(function).keySet().iterator().next();
                 sortItems.put(sortKey, type == SQLOrderingSpecification.ASC ? 1 : -1);
@@ -879,12 +947,22 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
     @Override
     public boolean visit(final SQLInListExpr x) {
         SQLExpr expr = x.getExpr();
+        for (Map.Entry<String, Object> entry : x.getAttributes().entrySet()) {
+            expr.putAttribute(entry.getKey(), entry.getValue());
+        }
         expr.accept(this);
         List<SQLExpr> targetList = x.getTargetList();
         List<Object> values = targetList.stream().map(sqlExpr -> ((SQLValuableExpr) sqlExpr).getValue()).collect(Collectors.toList());
         String inListExpression = x.isNot() ? NIN : IN;
         Document in = new Document();
-        in.put(inListExpression, List.of(DOLLAR + expr, values));
+        SQLTableSource resolvedTableSource;
+        String fieldString;
+        if (expr instanceof SQLIdentifierExpr && Objects.nonNull(resolvedTableSource = ((SQLIdentifierExpr) expr).getResolvedTableSource())) {
+            fieldString = DOLLAR + resolvedTableSource.getAlias() + DOT + expr;
+        } else {
+            fieldString = DOLLAR + expr;
+        }
+        in.put(inListExpression, List.of(fieldString, values));
         mapping.put(x, new Document(EXPR, in));
         return false;
     }
@@ -905,6 +983,9 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
         SQLExprImpl left = x.isNot() ? new SQLNotExpr(start) : start;
         SQLExprImpl right = x.isNot() ? new SQLNotExpr(end) : end;
         SQLBinaryOpExpr andExpression = new SQLBinaryOpExpr(left, SQLBinaryOperator.BooleanAnd, right);
+        for (Map.Entry<String, Object> entry : x.getAttributes().entrySet()) {
+            andExpression.putAttribute(entry.getKey(), entry.getValue());
+        }
         this.visit(andExpression);
         mapping.get(andExpression);
         mapping.put(x, new Document(AND, List.of(mapping.get(left), mapping.get(right))));
@@ -920,6 +1001,9 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
     @Override
     public boolean visit(final SQLNotExpr x) {
         SQLExpr expression = x.getExpr();
+        for (Map.Entry<String, Object> entry : x.getAttributes().entrySet()) {
+            expression.putAttribute(entry.getKey(), entry.getValue());
+        }
         if (expression instanceof SQLName) {
             mapping.put(x, new Document(expression.toString(), new Document(NE, true)));
         } else if (expression instanceof SQLBinaryOpExpr) {
@@ -949,30 +1033,39 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
             left.putAttribute(entry.getKey(), entry.getValue());
             right.putAttribute(entry.getKey(), entry.getValue());
         }
-        Object leftTableAlias = x.getAttribute(LEFT_TABLE_ALIAS_OF_ON_CONDITION);
+        Object rightTableAlias = x.getAttribute(RIGHT_TABLE_ALIAS_OF_ON_CONDITION);
         Object onCondition = x.getAttribute(ON_CONDITION);
-        boolean isOnCondition = Objects.nonNull(leftTableAlias) && Objects.nonNull(onCondition);
+        boolean isOnCondition = Objects.nonNull(rightTableAlias) && Objects.nonNull(onCondition);
         String column = null;
         if (left != null) {
             if (left instanceof SQLBinaryOpExpr) {
                 this.visit((SQLBinaryOpExpr) left);
-            } else if (left instanceof SQLName) {
+            } else if (left instanceof SQLPropertyExpr) {
                 left.accept(this);
                 String leftExpression = left.toString();
                 if (isOnCondition) {
                     // for on condition
-                    if (left instanceof SQLPropertyExpr && ((SQLPropertyExpr) left).getOwnerName().equals(leftTableAlias)) {
+                    if (((SQLPropertyExpr) left).getOwnerName().equals(rightTableAlias)) {
+                        // field belongs to right table.
+                        column = ((SQLName) left).getSimpleName();
+                    } else {
                         // field belongs to left table.
                         Document let = letOfOnCondition.get((SQLTableSource) onCondition);
                         String variable = leftExpression.replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE);
                         let.put(variable, DOLLAR + leftExpression);
                         column = DOLLAR + variable;
-                    } else {
-                        // field belongs to right table.
-                        column = ((SQLName) left).getSimpleName();
                     }
                 } else {
                     // for where condition
+                    column = left.toString();
+                }
+            } else if (left instanceof SQLIdentifierExpr) {
+                // only for where condition, join condition must have table alias present.
+                left.accept(this);
+                SQLTableSource resolvedTableSource = ((SQLIdentifierExpr) left).getResolvedTableSource();
+                if (Objects.nonNull(resolvedTableSource) && !StringUtils.isEmpty(resolvedTableSource.getAlias())) {
+                    column = resolvedTableSource.getAlias() + DOT + ((SQLIdentifierExpr) left).getSimpleName();
+                } else {
                     column = left.toString();
                 }
             } else {
@@ -985,30 +1078,38 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
         if (right != null) {
             if (right instanceof SQLBinaryOpExpr) {
                 this.visit((SQLBinaryOpExpr) right);
-            } else if (right instanceof SQLName) {
+            } else if (right instanceof SQLPropertyExpr) {
                 right.accept(this);
                 if (isOnCondition) {
                     // for on condition
-                    if (right instanceof SQLPropertyExpr && ((SQLPropertyExpr) right).getOwnerName().equals(leftTableAlias)) {
+                    if (((SQLPropertyExpr) right).getOwnerName().equals(rightTableAlias)) {
+                        // field belongs to right table.
+                        value = new SQLIdentifierExpr(((SQLName) right).getSimpleName());
+                    } else {
                         // field belongs to left table.
                         Document let = letOfOnCondition.get((SQLTableSource) onCondition);
                         String rightExpression = right.toString();
                         String variable = rightExpression.replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE);
                         let.put(variable, DOLLAR + rightExpression);
-                        value = DOLLAR + variable;
-                    } else {
-                        // field belongs to right table.
-                        value = new SQLIdentifierExpr(((SQLName) right).getSimpleName());
+                        value = new SQLIdentifierExpr(DOLLAR + variable);
                     }
                 } else {
                     // for where condition
+                    value = right;
+                }
+            } else if (right instanceof SQLIdentifierExpr) {
+                right.accept(this);
+                SQLTableSource resolvedTableSource = ((SQLIdentifierExpr) right).getResolvedTableSource();
+                if (Objects.nonNull(resolvedTableSource) && !StringUtils.isEmpty(resolvedTableSource.getAlias())) {
+                    // for query like select name from student s
+                    value = new SQLPropertyExpr(resolvedTableSource.getAlias(), ((SQLIdentifierExpr) right).getName());
+                } else {
                     value = right;
                 }
             } else if (right instanceof SQLValuableExpr) {
                 value = right;
             } else {
                 right.accept(this);
-
             }
         }
         if (Objects.nonNull(column) && Objects.nonNull(value)) {
@@ -1097,6 +1198,10 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
         x.setName(FORMAT_NAME.apply(x.getName()));
         if (REPRESENT_MONGO_ID.equalsIgnoreCase(x.getName())) {
             x.setName(MONGO_ID);
+        }
+        Object whereConditionTableSource = x.getAttribute(WHERE_CONDITION_TABLE_SOURCE);
+        if (Objects.nonNull(whereConditionTableSource)) {
+            x.setResolvedTableSource((SQLTableSource) whereConditionTableSource);
         }
         return false;
     }

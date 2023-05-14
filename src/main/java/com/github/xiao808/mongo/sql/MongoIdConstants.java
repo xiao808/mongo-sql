@@ -91,10 +91,16 @@ public interface MongoIdConstants {
     /**
      * used for on condition of join clause.
      */
-    String LEFT_TABLE_ALIAS_OF_ON_CONDITION = "LEFT_TABLE_ALIAS_OF_ON_CONDITION";
+    String RIGHT_TABLE_ALIAS_OF_ON_CONDITION = "RIGHT_TABLE_ALIAS_OF_ON_CONDITION";
 
     /**
      * used for on condition of join clause.
      */
     String ON_CONDITION = "ON_CONDITION";
+
+    /**
+     * used for where condition、on condition、order by
+     * alias will be added to SqlIdentifierExpr on where clause and on condition clause and order by clause.
+     */
+    String WHERE_CONDITION_TABLE_SOURCE = "WHERE_CONDITION_TABLE_SOURCE";
 }
