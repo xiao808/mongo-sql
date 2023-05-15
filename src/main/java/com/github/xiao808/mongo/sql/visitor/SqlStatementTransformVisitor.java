@@ -19,6 +19,7 @@ import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.expr.SQLValuableExpr;
 import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
+import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
 import com.alibaba.druid.sql.ast.statement.SQLJoinTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLSelect;
 import com.alibaba.druid.sql.ast.statement.SQLSelectGroupByClause;
@@ -370,11 +371,37 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
     /**
      * parse and store where clause
      *
+     * @param x sql insert statement
+     * @return whether execute visit method of SqlObject
+     */
+    @Override
+    public boolean visit(SQLInsertStatement x) {
+        x.getColumns().forEach(sqlExpr -> sqlExpr.accept(this));
+        x.getValuesList().forEach(valuesClause -> valuesClause.getValues().forEach(sqlExpr -> sqlExpr.accept(this)));
+        SQLTableSource tableSource = x.getTableSource();
+        if (Objects.nonNull(tableSource)) {
+            tableSource.accept(this);
+        }
+        return false;
+    }
+
+    /**
+     * parse and store where clause
+     *
      * @param x sql update statement
      * @return whether execute visit method of SqlObject
      */
     @Override
     public boolean visit(SQLUpdateStatement x) {
+        x.getItems().forEach(sqlUpdateSetItem -> sqlUpdateSetItem.getColumn().accept(this));
+        SQLTableSource tableSource = x.getTableSource();
+        SQLTableSource from = x.getFrom();
+        if (Objects.nonNull(tableSource)) {
+            tableSource.accept(this);
+        }
+        if (Objects.nonNull(from)) {
+            from.accept(this);
+        }
         SQLExpr where = x.getWhere();
         if (where != null) {
             where.accept(this);
@@ -402,6 +429,14 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
      */
     @Override
     public boolean visit(SQLDeleteStatement x) {
+        SQLTableSource tableSource = x.getTableSource();
+        SQLTableSource from = x.getFrom();
+        if (Objects.nonNull(tableSource)) {
+            tableSource.accept(this);
+        }
+        if (Objects.nonNull(from)) {
+            from.accept(this);
+        }
         SQLExpr where = x.getWhere();
         if (where != null) {
             where.accept(this);
@@ -582,16 +617,15 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
                             return aggregateMapping.getOrDefault(aggregateExpr, new Document());
                         }
                 ));
-        if (Objects.nonNull(groupDocument)) {
-            groupDocument.putAll(aggregateMap);
-        } else {
-            groupDocument = new Document(aggregateMap);
-        }
-        if (groupDocument.isEmpty()) {
+        if (Objects.isNull(groupDocument) && aggregateMap.isEmpty()) {
             // do not need grouping by clause
             return null;
         }
-        return new Document(GROUP, Map.of(MONGO_ID, groupDocument));
+        if (Objects.isNull(groupDocument)) {
+            groupDocument = new Document(MONGO_ID, 1);
+        }
+        groupDocument.putAll(aggregateMap);
+        return new Document(GROUP, groupDocument);
     }
 
     /**
@@ -654,7 +688,7 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
             for (Map.Entry<String, SQLAggregateExpr> entry : selectAggregateItemMap.entrySet()) {
                 // aggregate method expression will be added to group by
                 String selectItemAlias = entry.getKey();
-                projectItemMap.put(selectItemAlias, groupByPrefix + selectItemAlias);
+                projectItemMap.put(selectItemAlias, DOLLAR + selectItemAlias);
             }
         }
         // select *
@@ -816,7 +850,7 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
                     return fieldString;
                 })
                 .forEach(s -> groupDocument.put(s.replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE), DOLLAR + s));
-        mapping.put(x, groupDocument);
+        mapping.put(x, new Document(MONGO_ID, groupDocument));
         SQLExpr having = x.getHaving();
         if (Objects.nonNull(having)) {
             having.accept(this);
