@@ -113,6 +113,7 @@ import static com.github.xiao808.mongo.sql.MongoIdConstants.WHERE_CONDITION_TABL
 
 /**
  * remove quota of select items and condition column
+ * parse sql and generate information for execution
  *
  * @author zengxiao
  * @date 2023/4/11 20:53
@@ -1036,6 +1037,20 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
         Object rightTableAlias = x.getAttribute(RIGHT_TABLE_ALIAS_OF_ON_CONDITION);
         Object onCondition = x.getAttribute(ON_CONDITION);
         boolean isOnCondition = Objects.nonNull(rightTableAlias) && Objects.nonNull(onCondition);
+        String column = handleLeft(left, isOnCondition, onCondition, rightTableAlias);
+        Object value = handleRight(right, isOnCondition, onCondition, rightTableAlias);
+
+        if (Objects.nonNull(column) && Objects.nonNull(value)) {
+            mapping.put(x, handleBinaryOp(op, DOLLAR + column, value));
+        }
+
+        if (op == SQLBinaryOperator.BooleanAnd || op == SQLBinaryOperator.BooleanOr) {
+            mapping.put(x, new Document());
+        }
+        return true;
+    }
+
+    private String handleLeft(final SQLExpr left, boolean isOnCondition, Object onCondition, Object rightTableAlias) {
         String column = null;
         if (left != null) {
             if (left instanceof SQLBinaryOpExpr) {
@@ -1073,7 +1088,10 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
                 column = functionAliasMapping.get(left.toString());
             }
         }
+        return column;
+    }
 
+    private Object handleRight(final SQLExpr right, boolean isOnCondition, Object onCondition, Object rightTableAlias) {
         Object value = null;
         if (right != null) {
             if (right instanceof SQLBinaryOpExpr) {
@@ -1112,14 +1130,7 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
                 right.accept(this);
             }
         }
-        if (Objects.nonNull(column) && Objects.nonNull(value)) {
-            mapping.put(x, handleBinaryOp(op, DOLLAR + column, value));
-        }
-
-        if (op == SQLBinaryOperator.BooleanAnd || op == SQLBinaryOperator.BooleanOr) {
-            mapping.put(x, new Document());
-        }
-        return true;
+        return value;
     }
 
     private Document handleBinaryOp(SQLBinaryOperator operator, String column, Object value) {
