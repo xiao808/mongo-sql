@@ -242,12 +242,14 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
             SQLTableSource rootTableSource = queryBlock.getFrom();
             SQLSelectGroupByClause groupBy = queryBlock.getGroupBy();
             List<SQLSelectItem> selectList = queryBlock.getSelectList();
+            // whether sql statement has aggregate expr
+            boolean hasAggregateExpr = SqlUtils.hasAggregateOnSelectItemList(selectList);
+            // when select count(*), CountDocumentsOperation will be used.
+            this.countAll = SqlUtils.isCountAll(selectList);
+            // when having group by or aggregate function is present in select item list, $group will be added.
+            this.hasGroup = (Objects.nonNull(groupBy) || hasAggregateExpr) && !countAll;
             // is join table or has grouping by
-            if (rootTableSource instanceof SQLJoinTableSource || (hasGroup = Objects.nonNull(groupBy))) {
-                this.aggregate = true;
-            }
-            // in select item list, aggregate function is present except count(*)
-            if (!(this.countAll = this.hasGroup = SqlUtils.isCountAll(selectList)) && SqlUtils.hasAggregateOnSelectItemList(selectList)) {
+            if (rootTableSource instanceof SQLJoinTableSource || hasGroup) {
                 this.aggregate = true;
             }
             this.distinct = queryBlock.isDistinct();
@@ -875,7 +877,7 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
             SQLOrderingSpecification type = item.getType();
             if (expr instanceof SQLPropertyExpr) {
                 String sortField = expr.toString();
-                sortItems.put(hasGroup ? DOLLAR + MONGO_ID + DOT + sortField : sortField, type == SQLOrderingSpecification.ASC ? 1 : -1);
+                sortItems.put(hasGroup ? MONGO_ID + DOT + sortField.replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE) : sortField, type == SQLOrderingSpecification.ASC ? 1 : -1);
             } else if (expr instanceof SQLIdentifierExpr) {
                 String sortField = expr.toString();
                 SQLTableSource resolvedTableSource = ((SQLIdentifierExpr) expr).getResolvedTableSource();
@@ -883,7 +885,7 @@ public class SqlStatementTransformVisitor implements SQLASTVisitor {
                     // add alias.
                     sortField = resolvedTableSource.getAlias() + DOT + sortField;
                 }
-                sortItems.put(hasGroup ? DOLLAR + MONGO_ID + DOT + sortField : sortField, type == SQLOrderingSpecification.ASC ? 1 : -1);
+                sortItems.put(hasGroup ? MONGO_ID + DOT + sortField.replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE) : sortField, type == SQLOrderingSpecification.ASC ? 1 : -1);
             } else if (expr instanceof SQLMethodInvokeExpr) {
                 SQLMethodInvokeExpr function = (SQLMethodInvokeExpr) expr;
                 String sortKey = parseFunction(function).keySet().iterator().next();
