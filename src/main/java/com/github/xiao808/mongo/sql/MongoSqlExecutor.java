@@ -6,9 +6,12 @@ import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.util.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.github.xiao808.mongo.sql.codec.BsonObjectNodeCodecProvider;
-import com.github.xiao808.mongo.sql.execution.AbstractSqlExecution;
+import com.github.xiao808.mongo.sql.visitor.SqlVisitor;
+import com.github.xiao808.mongo.sql.visitor.SqlVisitorFactory;
 import com.mongodb.client.MongoDatabase;
 import lombok.extern.slf4j.Slf4j;
+import org.bson.BsonDocument;
+import org.bson.BsonString;
 import org.bson.Document;
 import org.bson.UuidRepresentation;
 import org.bson.codecs.BsonValueCodecProvider;
@@ -19,7 +22,7 @@ import org.bson.codecs.ValueCodecProvider;
 import org.bson.codecs.configuration.CodecRegistry;
 import org.bson.internal.CodecRegistryHelper;
 
-import java.util.Optional;
+import java.util.Objects;
 
 import static java.util.Arrays.asList;
 import static org.bson.codecs.configuration.CodecRegistries.fromProviders;
@@ -114,22 +117,23 @@ public final class MongoSqlExecutor {
      * @return result of sql execution
      */
     public JsonNode execute(MongoDatabase mongoDatabase, CodecRegistry codecRegistry) {
-        // get sql execution
-        AbstractSqlExecution execution = null;
+        String version = mongoDatabase
+                .runCommand(new BsonDocument("buildinfo", new BsonString("")))
+                .get("version")
+                .toString();
+        SqlVisitor sqlVisitor = SqlVisitorFactory.create(version);
+        Objects.requireNonNull(sqlStatement, "sql visitor is required.");
         try {
-            execution = AbstractSqlExecution.getInstance(sqlStatement, aggregationAllowDiskUse, aggregationBatchSize);
             // communicate with mongodb and gain the result.
-            return execution.execute(mongoDatabase.withCodecRegistry(codecRegistry));
+            return sqlVisitor.execute(sqlStatement, mongoDatabase.withCodecRegistry(codecRegistry), aggregationAllowDiskUse, aggregationBatchSize);
         } catch (Exception e) {
             log.error("parse sql and execute exceptionally", e);
             throw new RuntimeException(e);
         } finally {
-            Optional.ofNullable(execution).ifPresent(abstractSqlExecution -> {
-                Document document = abstractSqlExecution.getSqlStatementTransformVisitor().getDocument(sqlStatement);
-                if (!document.isEmpty()) {
-                    log.info(document.toJson());
-                }
-            });
+            Document document = sqlVisitor.getDocument(sqlStatement);
+            if (!document.isEmpty()) {
+                log.info(document.toJson());
+            }
         }
     }
 }

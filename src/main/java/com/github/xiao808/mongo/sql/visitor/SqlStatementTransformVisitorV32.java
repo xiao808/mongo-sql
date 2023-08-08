@@ -60,51 +60,42 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.github.xiao808.mongo.sql.LexerConstants.ALL;
 import static com.github.xiao808.mongo.sql.LexerConstants.AND;
-import static com.github.xiao808.mongo.sql.LexerConstants.ARRAY_ELEM_AT;
 import static com.github.xiao808.mongo.sql.LexerConstants.AS;
 import static com.github.xiao808.mongo.sql.LexerConstants.AVG;
 import static com.github.xiao808.mongo.sql.LexerConstants.COUNT;
 import static com.github.xiao808.mongo.sql.LexerConstants.EQ;
 import static com.github.xiao808.mongo.sql.LexerConstants.EXISTS;
-import static com.github.xiao808.mongo.sql.LexerConstants.EXPR;
-import static com.github.xiao808.mongo.sql.LexerConstants.FACET;
+import static com.github.xiao808.mongo.sql.LexerConstants.FOREIGN_FIELD;
 import static com.github.xiao808.mongo.sql.LexerConstants.FROM;
 import static com.github.xiao808.mongo.sql.LexerConstants.GROUP;
 import static com.github.xiao808.mongo.sql.LexerConstants.GT;
 import static com.github.xiao808.mongo.sql.LexerConstants.GTE;
 import static com.github.xiao808.mongo.sql.LexerConstants.IN;
-import static com.github.xiao808.mongo.sql.LexerConstants.INPUT;
-import static com.github.xiao808.mongo.sql.LexerConstants.LET;
 import static com.github.xiao808.mongo.sql.LexerConstants.LIMIT;
+import static com.github.xiao808.mongo.sql.LexerConstants.LOCAL_FIELD;
 import static com.github.xiao808.mongo.sql.LexerConstants.LOOKUP;
 import static com.github.xiao808.mongo.sql.LexerConstants.LT;
 import static com.github.xiao808.mongo.sql.LexerConstants.LTE;
 import static com.github.xiao808.mongo.sql.LexerConstants.MATCH;
 import static com.github.xiao808.mongo.sql.LexerConstants.MAX;
-import static com.github.xiao808.mongo.sql.LexerConstants.MERGE_OBJECTS;
 import static com.github.xiao808.mongo.sql.LexerConstants.MIN;
 import static com.github.xiao808.mongo.sql.LexerConstants.NE;
-import static com.github.xiao808.mongo.sql.LexerConstants.NEW_ROOT;
 import static com.github.xiao808.mongo.sql.LexerConstants.NIN;
 import static com.github.xiao808.mongo.sql.LexerConstants.NOT;
 import static com.github.xiao808.mongo.sql.LexerConstants.OR;
 import static com.github.xiao808.mongo.sql.LexerConstants.PATH;
-import static com.github.xiao808.mongo.sql.LexerConstants.PIPELINE;
 import static com.github.xiao808.mongo.sql.LexerConstants.PRESERVE_NULL_AND_EMPTY_ARRAYS;
 import static com.github.xiao808.mongo.sql.LexerConstants.PROJECT;
-import static com.github.xiao808.mongo.sql.LexerConstants.REGEX_MATCH;
-import static com.github.xiao808.mongo.sql.LexerConstants.REGEX_ORIGIN;
-import static com.github.xiao808.mongo.sql.LexerConstants.REPLACE_ROOT;
+import static com.github.xiao808.mongo.sql.LexerConstants.REGEX;
 import static com.github.xiao808.mongo.sql.LexerConstants.ROOT;
 import static com.github.xiao808.mongo.sql.LexerConstants.SKIP;
 import static com.github.xiao808.mongo.sql.LexerConstants.SORT;
 import static com.github.xiao808.mongo.sql.LexerConstants.SUM;
-import static com.github.xiao808.mongo.sql.LexerConstants.TOTAL;
-import static com.github.xiao808.mongo.sql.LexerConstants.TO_STRING;
 import static com.github.xiao808.mongo.sql.LexerConstants.UNWIND;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.CHAR_WILL_BE_REMOVED_IN_FIELD_END;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.CHAR_WILL_BE_REMOVED_IN_FIELD_START;
@@ -125,14 +116,13 @@ import static com.github.xiao808.mongo.sql.MongoIdConstants.UNDERLINE;
 import static com.github.xiao808.mongo.sql.MongoIdConstants.WHERE_CONDITION_TABLE_SOURCE;
 
 /**
- * remove quota of select items and condition column
- * parse sql and generate information for execution
+ * for mongodb server version 3.2
  *
  * @author zengxiao
- * @date 2023/4/11 20:53
+ * @date 2023/8/3 14:51
  * @since 1.0
  **/
-public class SqlStatementTransformVisitor implements SqlVisitor {
+public class SqlStatementTransformVisitorV32 implements SqlVisitor {
 
     /**
      * function to format SqlName
@@ -143,10 +133,6 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
      * used to store temp result of SQL AST parsed, at special stage, temp result will be combined according to it`s relation.
      */
     private final Map<SQLObject, Document> mapping = new HashMap<>();
-    /**
-     * used to store let document for on condition
-     */
-    private final Map<SQLTableSource, Document> letOfOnCondition = new HashMap<>();
     /**
      * used to store temp result of SqlAggregateExpr parsed.
      */
@@ -159,6 +145,10 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
      * used to store temp result of SqlMethodInvokeExpr parsed.
      */
     private final Map<SQLMethodInvokeExpr, Document> functionMapping = new HashMap<>();
+    /**
+     * used to store local field and foreign field pair in on condition temporarily.
+     */
+    private String[] localForeignFieldPair = new String[2];
 
     /**
      * whether sql select statement has join clause or group by or aggregate function except count(*)
@@ -305,6 +295,7 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
             }
             rootTableSource = ((SQLJoinTableSource) rootTableSource).getLeft();
         }
+        String rootTableSourceAlias = rootTableSource.getAlias();
         // if base table has alias, add alias - $$ROOT mapping project.
         List<Document> result = new ArrayList<>();
         if (!StringUtils.isEmpty(rootTableSource.getAlias())) {
@@ -368,14 +359,11 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
                 partialAggregateList.add(aliasRemovedDocument);
             }
             List<Document> aggregateList = new ArrayList<>();
-            List<Document> pipeline = lookup.getList(PIPELINE, Document.class);
             // add sub query aggregation.
             aggregateList.addAll(partialAggregateList);
-            // add join condition
-            aggregateList.addAll(pipeline);
             // add pagination
             aggregateList.addAll(pagination);
-            lookup.put(PIPELINE, aggregateList);
+            result.addAll(aggregateList);
             result.add(document);
         }
     }
@@ -560,11 +548,14 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
         while (tableSource instanceof SQLJoinTableSource) {
             // join must have alias, or else sql can not be parsed.
             SQLTableSource right = ((SQLJoinTableSource) tableSource).getRight();
+            SQLTableSource left = ((SQLJoinTableSource) tableSource).getLeft();
             SQLExpr condition = ((SQLJoinTableSource) tableSource).getCondition();
             tableAliasList.add(right.getAlias());
+            documentList.add(new Document(MATCH, Map.of("matches", Map.of(EQ, true))));
+            documentList.add(new Document(PROJECT, Map.of("matches", mapping.get(condition), right.getAlias(), DOLLAR + right.getAlias(), left.getAlias(), DOLLAR + left.getAlias())));
             documentList.add(mapping.get(right));
-            documentList.add(mapping.get(condition));
-            tableSource = ((SQLJoinTableSource) tableSource).getLeft();
+            documentList.add(mapping.get(tableSource));
+            tableSource = left;
         }
         if (Objects.nonNull(tableSource.getAlias())) {
             tableAliasList.add(tableSource.getAlias());
@@ -608,7 +599,7 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
 
         // generate pagination according to sql limit clause
         SQLLimit limit = x.getLimit();
-        parsePagination(limit, isRootStatement, documentList);
+        parsePagination(limit, documentList);
 
         // use underline store collection in document
         Document query = new Document(UNDERLINE, documentList);
@@ -719,7 +710,6 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
             if (isRootStatement) {
                 aliasPathList.add(ROOT);
             }
-            result.add(new Document(REPLACE_ROOT, new Document(NEW_ROOT, new Document(MERGE_OBJECTS, aliasPathList))));
             projectItemMap.putAll(selectTableAliasList.stream().collect(Collectors.toMap(o -> o, s -> 0)));
         }
         if (!projectItemMap.isEmpty()) {
@@ -731,11 +721,10 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
     /**
      * parse sql limit expr and then generate pagination document list according to the type of sql query block.
      *
-     * @param limit           sql limit expr
-     * @param isRootStatement whether sql query block is root
-     * @param documentList    aggregate document list
+     * @param limit        sql limit expr
+     * @param documentList aggregate document list
      */
-    private void parsePagination(SQLLimit limit, boolean isRootStatement, List<Document> documentList) {
+    private void parsePagination(SQLLimit limit, List<Document> documentList) {
         if (Objects.nonNull(limit)) {
             SQLValuableExpr offset = (SQLValuableExpr) limit.getOffset();
             SQLValuableExpr rowCount = (SQLValuableExpr) limit.getRowCount();
@@ -744,17 +733,7 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
                 pagination.add(new Document(SKIP, offset.getValue()));
             }
             pagination.add(new Document(LIMIT, rowCount.getValue()));
-            if (isRootStatement) {
-                // pagination count will be handled on top query block
-                Document facet = new Document();
-                facet.put(REPRESENT_PAGE_TOTAL, List.of(new Document(COUNT, REPRESENT_PAGE_TOTAL)));
-                facet.put(REPRESENT_PAGE_DATA, pagination);
-                documentList.add(new Document(FACET, facet));
-                documentList.add(new Document(PROJECT, new Document(Map.of(REPRESENT_PAGE_DATA, 1, REPRESENT_PAGE_TOTAL, new Document(ARRAY_ELEM_AT, List.of(TOTAL, 0))))));
-                documentList.add(new Document(PROJECT, new Document(Map.of(REPRESENT_PAGE_DATA, 1, REPRESENT_PAGE_TOTAL, TOTAL + DOT + REPRESENT_PAGE_TOTAL))));
-            } else {
-                documentList.addAll(pagination);
-            }
+            documentList.addAll(pagination);
         }
     }
 
@@ -774,31 +753,29 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
         SQLExpr condition = x.getCondition();
         condition.putAttribute(RIGHT_TABLE_ALIAS_OF_ON_CONDITION, right.getAlias());
         condition.putAttribute(ON_CONDITION, right);
-        letOfOnCondition.put(right, new Document());
         condition.accept(this);
-        mapping.put(condition, generateLookupStep(right, condition));
+        mapping.put(x, generateLookupStep(right, condition));
         mapping.put(right, generateUnwind(right, joinType));
         return false;
     }
 
-    private Document generateLookupStep(SQLTableSource tableSource, SQLExpr condition) {
+    private Document generateLookupStep(SQLTableSource rightTableSource, SQLExpr condition) {
         Document lookupInternal = new Document();
         String tableName;
-        if (tableSource instanceof SQLExprTableSource) {
-            tableName = ((SQLExprTableSource) tableSource).getTableName();
-        } else if (tableSource instanceof SQLSubqueryTableSource) {
+        if (rightTableSource instanceof SQLExprTableSource) {
+            tableName = ((SQLExprTableSource) rightTableSource).getTableName();
+        } else if (rightTableSource instanceof SQLSubqueryTableSource) {
             // use empty string placeholder
             tableName = EMPTY_STRING;
         } else {
-            throw new RuntimeException(String.format("table source: %s is not supported now.", tableSource.getClass().getSimpleName()));
+            throw new RuntimeException(String.format("table source: %s is not supported now.", rightTableSource.getClass().getSimpleName()));
         }
         lookupInternal.put(FROM, tableName);
-        lookupInternal.put(LET, letOfOnCondition.remove(tableSource));
-        lookupInternal.put(PIPELINE, List.of(new Document(Map.of(MATCH, mapping.get(condition)))));
-        lookupInternal.put(AS, tableSource.getAlias());
+        lookupInternal.put(LOCAL_FIELD, localForeignFieldPair[0]);
+        lookupInternal.put(FOREIGN_FIELD, localForeignFieldPair[1]);
+        lookupInternal.put(AS, rightTableSource.getAlias());
         return new Document(LOOKUP, lookupInternal);
     }
-
 
     private Document generateUnwind(SQLTableSource tableSource, SQLJoinTableSource.JoinType joinType) {
         Document unwind = new Document();
@@ -1015,12 +992,12 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
         SQLTableSource resolvedTableSource;
         String fieldString;
         if (expr instanceof SQLIdentifierExpr && Objects.nonNull(resolvedTableSource = ((SQLIdentifierExpr) expr).getResolvedTableSource())) {
-            fieldString = DOLLAR + resolvedTableSource.getAlias() + DOT + expr;
+            fieldString = resolvedTableSource.getAlias() + DOT + expr;
         } else {
-            fieldString = DOLLAR + expr;
+            fieldString = expr.toString();
         }
-        in.put(inListExpression, List.of(fieldString, values));
-        mapping.put(x, new Document(EXPR, in));
+        in.put(fieldString, Map.of(inListExpression, values));
+        mapping.put(x, in);
         return false;
     }
 
@@ -1093,11 +1070,17 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
         Object rightTableAlias = x.getAttribute(RIGHT_TABLE_ALIAS_OF_ON_CONDITION);
         Object onCondition = x.getAttribute(ON_CONDITION);
         boolean isOnCondition = Objects.nonNull(rightTableAlias) && Objects.nonNull(onCondition);
+        boolean isNotFiledPair = StringUtils.isEmpty(localForeignFieldPair[0]) || StringUtils.isEmpty(localForeignFieldPair[1]);
+        if (isOnCondition && isNotFiledPair) {
+            // clear
+            localForeignFieldPair[0] = null;
+            localForeignFieldPair[1] = null;
+        }
         String column = handleLeft(left, isOnCondition, onCondition, rightTableAlias);
         Object value = handleRight(right, isOnCondition, onCondition, rightTableAlias);
 
         if (Objects.nonNull(column) && Objects.nonNull(value)) {
-            mapping.put(x, handleBinaryOp(op, DOLLAR + column, value));
+            mapping.put(x, handleBinaryOp(op, column, value, isOnCondition));
         }
 
         if (op == SQLBinaryOperator.BooleanAnd || op == SQLBinaryOperator.BooleanOr) {
@@ -1118,17 +1101,19 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
                     // for on condition
                     if (((SQLPropertyExpr) left).getOwnerName().equals(rightTableAlias)) {
                         // field belongs to right table.
-                        column = ((SQLName) left).getSimpleName();
+                        if (StringUtils.isEmpty(localForeignFieldPair[1])) {
+                            localForeignFieldPair[1] = ((SQLName) left).getSimpleName();
+                        }
                     } else {
                         // field belongs to left table.
-                        Document let = letOfOnCondition.get((SQLTableSource) onCondition);
-                        String variable = leftExpression.replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE);
-                        let.put(variable, DOLLAR + leftExpression);
-                        column = DOLLAR + variable;
+                        if (StringUtils.isEmpty(localForeignFieldPair[0])) {
+                            localForeignFieldPair[0] = leftExpression;
+                        }
                     }
+                    column = DOLLAR + leftExpression;
                 } else {
                     // for where condition
-                    column = left.toString();
+                    column = leftExpression;
                 }
             } else if (left instanceof SQLIdentifierExpr) {
                 // only for where condition, join condition must have table alias present.
@@ -1155,18 +1140,20 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
             } else if (right instanceof SQLPropertyExpr) {
                 right.accept(this);
                 if (isOnCondition) {
+                    String rightExpression = right.toString();
                     // for on condition
                     if (((SQLPropertyExpr) right).getOwnerName().equals(rightTableAlias)) {
                         // field belongs to right table.
-                        value = new SQLIdentifierExpr(((SQLName) right).getSimpleName());
+                        if (StringUtils.isEmpty(localForeignFieldPair[1])) {
+                            localForeignFieldPair[1] = ((SQLName) right).getSimpleName();
+                        }
                     } else {
                         // field belongs to left table.
-                        Document let = letOfOnCondition.get((SQLTableSource) onCondition);
-                        String rightExpression = right.toString();
-                        String variable = rightExpression.replaceAll(REPLACED_BY_UNDERLINE, UNDERLINE);
-                        let.put(variable, DOLLAR + rightExpression);
-                        value = new SQLIdentifierExpr(DOLLAR + variable);
+                        if (StringUtils.isEmpty(localForeignFieldPair[0])) {
+                            localForeignFieldPair[0] = rightExpression;
+                        }
                     }
+                    value = new SQLIdentifierExpr(rightExpression);
                 } else {
                     // for where condition
                     value = right;
@@ -1189,27 +1176,51 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
         return value;
     }
 
-    private Document handleBinaryOp(SQLBinaryOperator operator, String column, Object value) {
+    private Document handleBinaryOp(SQLBinaryOperator operator, String column, Object value, boolean isOnCondition) {
         Document query = new Document();
         Object rightExpression = value instanceof SQLName ? DOLLAR + value : ((SQLValuableExpr) value).getValue();
         switch (operator) {
             case Equality:
-                query.put(EQ, List.of(column, rightExpression));
+                if (isOnCondition) {
+                    query.put(EQ, List.of(column, rightExpression));
+                } else {
+                    query.put(column, Map.of(EQ, rightExpression));
+                }
                 break;
             case NotEqual:
-                query.put(NE, List.of(column, rightExpression));
+                if (isOnCondition) {
+                    query.put(NE, List.of(column, rightExpression));
+                } else {
+                    query.put(column, Map.of(NE, rightExpression));
+                }
                 break;
             case GreaterThan:
-                query.put(GT, List.of(column, rightExpression));
+                if (isOnCondition) {
+                    query.put(GT, List.of(column, rightExpression));
+                } else {
+                    query.put(column, Map.of(GT, rightExpression));
+                }
                 break;
             case LessThan:
-                query.put(LT, List.of(column, rightExpression));
+                if (isOnCondition) {
+                    query.put(LT, List.of(column, rightExpression));
+                } else {
+                    query.put(column, Map.of(LT, rightExpression));
+                }
                 break;
             case GreaterThanOrEqual:
-                query.put(GTE, List.of(column, rightExpression));
+                if (isOnCondition) {
+                    query.put(GTE, List.of(column, rightExpression));
+                } else {
+                    query.put(column, Map.of(GTE, rightExpression));
+                }
                 break;
             case LessThanOrEqual:
-                query.put(LTE, List.of(column, rightExpression));
+                if (isOnCondition) {
+                    query.put(LTE, List.of(column, rightExpression));
+                } else {
+                    query.put(column, Map.of(LTE, rightExpression));
+                }
                 break;
             case Is:
                 query.put(column, new Document(EXISTS, true));
@@ -1218,14 +1229,14 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
                 query.put(column, new Document(EXISTS, false));
                 break;
             case Like:
-                query.put(REGEX_MATCH, new Document(Map.of(INPUT, new Document(TO_STRING, column), REGEX_ORIGIN, REGEX_START_WITH + SqlUtils.constructLikeRegex(rightExpression.toString()) + DOLLAR)));
+                query.put(column, Map.of(REGEX, REGEX_START_WITH + SqlUtils.constructLikeRegex(rightExpression.toString()) + DOLLAR));
                 break;
             case NotLike:
-                query.put(column.substring(1), new Document(Map.of(NOT, new Document(REGEX_MATCH, new Document(Map.of(INPUT, new Document(TO_STRING, column), REGEX_ORIGIN, REGEX_START_WITH + SqlUtils.constructLikeRegex(rightExpression.toString()) + DOLLAR))))));
+                query.put(column, new Document(Map.of(NOT, Pattern.compile(REGEX_START_WITH + SqlUtils.constructLikeRegex(rightExpression.toString()) + DOLLAR))));
                 break;
             default:
         }
-        return new Document(EXPR, query);
+        return query;
     }
 
     @Override
@@ -1299,8 +1310,8 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
         public JsonNode execute(SQLSelectStatement selectStatement, MongoCollection<ObjectNode> collection) {
             SQLSelectQueryBlock queryBlock = selectStatement.getSelect().getQueryBlock();
             String tableAlias = queryBlock.getFrom().getAlias();
-            Document filter = SqlStatementTransformVisitor.this.getWhere(queryBlock.getWhere());
-            String distinctField = SqlStatementTransformVisitor.this.getDistinctField().replace(tableAlias + DOT, EMPTY_STRING);
+            Document filter = SqlStatementTransformVisitorV32.this.getWhere(queryBlock.getWhere());
+            String distinctField = SqlStatementTransformVisitorV32.this.getDistinctField().replace(tableAlias + DOT, EMPTY_STRING);
             if (filter != null && !filter.isEmpty()) {
                 filter = Document.parse(filter.toJson().replace(tableAlias + DOT, EMPTY_STRING));
             }
@@ -1321,11 +1332,34 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
         public JsonNode execute(SQLSelectStatement selectStatement, MongoCollection<ObjectNode> collection, boolean aggregationAllowDiskUse, int aggregationBatchSize) {
             SQLSelectQueryBlock queryBlock = selectStatement.getSelect().getQueryBlock();
             SQLLimit limit = queryBlock.getLimit();
-            List<Document> aggregation = SqlStatementTransformVisitor.this.getAggregation(selectStatement);
-            AggregateIterable<ObjectNode> aggregate = collection.aggregate(aggregation)
-                    .allowDiskUse(aggregationAllowDiskUse)
-                    .batchSize(aggregationBatchSize);
-            return Objects.nonNull(limit) ? unwrapPaginationResult(aggregate) : unwrapResult(aggregate);
+            List<Document> aggregation = SqlStatementTransformVisitorV32.this.getAggregation(selectStatement);
+            if (Objects.nonNull(limit)) {
+                List<Document> countDocument = aggregation.stream().filter(document -> !document.containsKey(SKIP) && !document.containsKey(LIMIT)).collect(Collectors.toList());
+                countDocument.add(new Document(GROUP, new Document(MONGO_ID, new BsonInt32(1))
+                        .append(REPRESENT_PAGE_TOTAL, new Document(SUM, new BsonInt32(1)))));
+                long total = 0L;
+                try (MongoCursor<ObjectNode> cursor = collection.aggregate(countDocument)
+                        .allowDiskUse(aggregationAllowDiskUse)
+                        .batchSize(aggregationBatchSize)
+                        .iterator()) {
+                    ObjectNode result = cursor.hasNext() ? cursor.next() : null;
+                    if (result == null || result.isEmpty()) {
+                        return new ObjectNode(JsonNodeFactory.instance).put(REPRESENT_PAGE_TOTAL, total);
+                    } else {
+                        total = result.get(REPRESENT_PAGE_TOTAL).longValue();
+                        AggregateIterable<ObjectNode> aggregate = collection.aggregate(aggregation)
+                                .allowDiskUse(aggregationAllowDiskUse)
+                                .batchSize(aggregationBatchSize);
+                        ArrayNode data = unwrapResult(aggregate);
+                        return new ObjectNode(JsonNodeFactory.instance).put(REPRESENT_PAGE_TOTAL, total).set(REPRESENT_PAGE_DATA, data);
+                    }
+                }
+            } else {
+                AggregateIterable<ObjectNode> aggregate = collection.aggregate(aggregation)
+                        .allowDiskUse(aggregationAllowDiskUse)
+                        .batchSize(aggregationBatchSize);
+                return unwrapResult(aggregate);
+            }
         }
 
         /**
@@ -1368,7 +1402,7 @@ public class SqlStatementTransformVisitor implements SqlVisitor {
             if (!StringUtils.isEmpty(alias)) {
                 aggregation.add(new Document(PROJECT, new Document(Map.of(alias, ROOT, MONGO_ID, 0))));
             }
-            Document filter = SqlStatementTransformVisitor.this.getWhere(queryBlock.getWhere());
+            Document filter = SqlStatementTransformVisitorV32.this.getWhere(queryBlock.getWhere());
             aggregation.add(new Document(MATCH, filter != null ? filter : new BsonDocument()));
             if (Objects.nonNull(limit)) {
                 Long skip = (Long) SqlUtils.getRealValue(limit.getOffset());

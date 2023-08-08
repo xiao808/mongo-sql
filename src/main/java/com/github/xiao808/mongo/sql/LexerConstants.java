@@ -300,4 +300,12 @@ public interface LexerConstants {
      * all column
      */
     String ALL = "*";
+    /**
+     * join in 3.2
+     */
+    String LOCAL_FIELD = "localField";
+    /**
+     * join in 3.2
+     */
+    String FOREIGN_FIELD = "foreignField";
 }

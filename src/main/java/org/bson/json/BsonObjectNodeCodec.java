@@ -1,4 +1,4 @@
-package com.github.xiao808.mongo.sql.codec;
+package org.bson.json;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -10,9 +10,6 @@ import org.bson.BsonWriter;
 import org.bson.codecs.Codec;
 import org.bson.codecs.DecoderContext;
 import org.bson.codecs.EncoderContext;
-import org.bson.json.JsonReader;
-import org.bson.json.JsonWriter;
-import org.bson.json.JsonWriterSettings;
 
 import java.io.StringWriter;
 import java.util.Iterator;
@@ -34,7 +31,7 @@ import static com.github.xiao808.mongo.sql.MongoIdConstants.REPRESENT_PAGE_TOTAL
 @Slf4j
 public class BsonObjectNodeCodec implements Codec<ObjectNode> {
 
-    private final JsonWriterSettings writerSettings = JsonWriterSettings.builder().build();
+    private final JsonWriterSettings writerSettings = JsonWriterSettings.builder().regularExpressionConverter(new ShellRegularExpressionConverter()).build();
 
     private final ObjectMapper mapper = new ObjectMapper();
 
