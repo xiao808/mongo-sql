@@ -149,6 +149,10 @@ public class SqlStatementTransformVisitorV32 implements SqlVisitor {
      * used to store local field and foreign field pair in on condition temporarily.
      */
     private String[] localForeignFieldPair = new String[2];
+    /**
+     * using for inner join
+     */
+    private final static String MATCHES = "matches";
 
     /**
      * whether sql select statement has join clause or group by or aggregate function except count(*)
@@ -549,10 +553,23 @@ public class SqlStatementTransformVisitorV32 implements SqlVisitor {
             // join must have alias, or else sql can not be parsed.
             SQLTableSource right = ((SQLJoinTableSource) tableSource).getRight();
             SQLTableSource left = ((SQLJoinTableSource) tableSource).getLeft();
-            SQLExpr condition = ((SQLJoinTableSource) tableSource).getCondition();
+            SQLJoinTableSource.JoinType joinType = ((SQLJoinTableSource) tableSource).getJoinType();
             tableAliasList.add(right.getAlias());
-            documentList.add(new Document(MATCH, Map.of("matches", Map.of(EQ, true))));
-            documentList.add(new Document(PROJECT, Map.of("matches", mapping.get(condition), right.getAlias(), DOLLAR + right.getAlias(), left.getAlias(), DOLLAR + left.getAlias())));
+            if (joinType != SQLJoinTableSource.JoinType.LEFT_OUTER_JOIN) {
+                SQLExpr condition = ((SQLJoinTableSource) tableSource).getCondition();
+                documentList.add(new Document(MATCH, Map.of(MATCHES, Map.of(EQ, true))));
+                Map<String, Object> projectMap = new HashMap<>(4);
+                projectMap.put(MATCHES, mapping.get(condition));
+                projectMap.put(right.getAlias(), DOLLAR + right.getAlias());
+                SQLTableSource temp = left;
+                while (temp instanceof SQLJoinTableSource) {
+                    SQLTableSource rightAliasTable = ((SQLJoinTableSource) temp).getRight();
+                    projectMap.put(rightAliasTable.getAlias(), DOLLAR + rightAliasTable.getAlias());
+                    temp = ((SQLJoinTableSource) temp).getLeft();
+                }
+                projectMap.put(temp.getAlias(), DOLLAR + temp.getAlias());
+                documentList.add(new Document(PROJECT, projectMap));
+            }
             documentList.add(mapping.get(right));
             documentList.add(mapping.get(tableSource));
             tableSource = left;
@@ -774,6 +791,8 @@ public class SqlStatementTransformVisitorV32 implements SqlVisitor {
         lookupInternal.put(LOCAL_FIELD, localForeignFieldPair[0]);
         lookupInternal.put(FOREIGN_FIELD, localForeignFieldPair[1]);
         lookupInternal.put(AS, rightTableSource.getAlias());
+        localForeignFieldPair[0] = null;
+        localForeignFieldPair[1] = null;
         return new Document(LOOKUP, lookupInternal);
     }
 

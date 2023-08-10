@@ -51,6 +51,10 @@ public final class MongoSqlExecutor {
      * batch row of aggregation.
      */
     private final int aggregationBatchSize;
+    /**
+     * cached version of mongodb
+     */
+    private static String version;
 
     /**
      * codec support for jackson
@@ -117,10 +121,12 @@ public final class MongoSqlExecutor {
      * @return result of sql execution
      */
     public JsonNode execute(MongoDatabase mongoDatabase, CodecRegistry codecRegistry) {
-        String version = mongoDatabase
-                .runCommand(new BsonDocument("buildinfo", new BsonString("")))
-                .get("version")
-                .toString();
+        if (StringUtils.isEmpty(version)) {
+            version = mongoDatabase
+                    .runCommand(new BsonDocument("buildinfo", new BsonString("")))
+                    .get("version")
+                    .toString();
+        }
         SqlVisitor sqlVisitor = SqlVisitorFactory.create(version);
         Objects.requireNonNull(sqlStatement, "sql visitor is required.");
         try {
