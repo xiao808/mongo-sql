@@ -291,95 +291,78 @@ public class SqlStatementTransformVisitorV32 implements SqlVisitor {
 
         // get all sub query information, according to table alias to merge into main information.
         Map<String, Document> subQueryMap = new HashMap<>(2);
+        String mainTableName = null;
+        String mainTableAlias = null;
+        String subQueryAlias = null;
+        // get sub query information, sub query will be in the highest priority
         while (rootTableSource instanceof SQLJoinTableSource) {
             SQLTableSource right = ((SQLJoinTableSource) rootTableSource).getRight();
             if (right instanceof SQLSubqueryTableSource) {
                 Document subQueryDocument = mapping.get(((SQLSubqueryTableSource) right).getSelect());
-                subQueryMap.put(subQueryDocument.getString(SUB_QUERY_ALIAS_PLACEHOLDER), subQueryDocument);
+                subQueryAlias = subQueryDocument.getString(SUB_QUERY_BASE_ALIAS_PLACEHOLDER);
+                mainTableAlias = subQueryDocument.getString(SUB_QUERY_ALIAS_PLACEHOLDER);
+                mainTableName = subQueryDocument.getString(FROM);
+                subQueryMap.put(mainTableAlias, subQueryDocument);
             }
             rootTableSource = ((SQLJoinTableSource) rootTableSource).getLeft();
         }
-        String rootTableSourceAlias = rootTableSource.getAlias();
-        // if base table has alias, add alias - $$ROOT mapping project.
-        List<Document> result = new ArrayList<>();
-        if (!StringUtils.isEmpty(rootTableSource.getAlias())) {
-            result.add(new Document(PROJECT, new Document(Map.of(rootTableSource.getAlias(), ROOT, MONGO_ID, 0))));
-        }
-        String mainTableName;
-        // for main table which is sub query
         if (rootTableSource instanceof SQLSubqueryTableSource) {
-            Document subQuery = mapping.get(((SQLSubqueryTableSource) rootTableSource).getSelect());
-            mainTableName = subQuery.getString(FROM);
-            String baseAlias = subQuery.getString(SUB_QUERY_BASE_ALIAS_PLACEHOLDER);
-            List<Document> subQueryAggregateList = subQuery.getList(UNDERLINE, Document.class);
-            result.addAll(subQueryAggregateList.stream()
-                    .map(d -> removeAliasForSubQueryDocument(d, baseAlias)).collect(Collectors.toList()));
-        } else {
+            Document subQueryDocument = mapping.get(((SQLSubqueryTableSource) rootTableSource).getSelect());
+            subQueryAlias = subQueryDocument.getString(SUB_QUERY_BASE_ALIAS_PLACEHOLDER);
+            mainTableAlias = subQueryDocument.getString(SUB_QUERY_ALIAS_PLACEHOLDER);
+            mainTableName = subQueryDocument.getString(FROM);
+            subQueryMap.put(mainTableAlias, subQueryDocument);
+        } else if (StringUtils.isEmpty(mainTableName)) {
+            // there does not have sub query and main table name is empty
             mainTableName = ((SQLExprTableSource) rootTableSource).getTableName();
         }
-        // combine root aggregation
-        combinePipeLine(rootAggregateList, subQueryMap, result);
-        mapping.put(x, new Document(Map.of(UNDERLINE, result, FROM, mainTableName)));
-    }
-
-    private void combinePipeLine(List<Document> rootAggregateList, Map<String, Document> subQueryMap, List<Document> result) {
-        for (Document document : rootAggregateList) {
-            // not join
-            if (Objects.isNull(document.get(LOOKUP))) {
-                result.add(document);
-                continue;
+        boolean emptySubQueryBaseAlias = StringUtils.isEmpty(subQueryAlias);
+        if (emptySubQueryBaseAlias && StringUtils.isEmpty(mainTableAlias)) {
+            mainTableAlias = rootTableSource.getAlias();
+        }
+        // if base table has alias, add alias - $$ROOT mapping project.
+        List<Document> result = new ArrayList<>();
+        if (subQueryMap.isEmpty()) {
+            // main table which having alias while sql without sub query
+            if (!StringUtils.isEmpty(mainTableAlias)) {
+                result.add(new Document(PROJECT, new Document(Map.of(mainTableAlias, ROOT, MONGO_ID, 0))));
             }
-            Document lookup = document.get(LOOKUP, Document.class);
-            String tableAlias = lookup.getString(AS);
-            Document subQuery = subQueryMap.get(tableAlias);
-            // not sub query
-            if (Objects.isNull(subQuery)) {
-                result.add(document);
-                continue;
+            result.addAll(rootAggregateList);
+        } else {
+            if (subQueryMap.size() > 1) {
+                throw new IllegalArgumentException("multiple sub query is not supported now.");
             }
-            // set table name, cause while handling SqlSubQueryTableSource, we set table name with empty string instead.
-            String tableName = subQuery.getString(FROM);
-            String baseAlias = subQuery.getString(SUB_QUERY_BASE_ALIAS_PLACEHOLDER);
-            lookup.put(FROM, tableName);
-
-            List<Document> subQueryAggregateList = subQuery.getList(UNDERLINE, Document.class);
-            List<Document> partialAggregateList = new ArrayList<>();
-            List<Document> pagination = new ArrayList<>();
-            for (Document d : subQueryAggregateList) {
-                Object skip = d.get(SKIP);
-                Object limit = d.get(LIMIT);
-                if (Objects.nonNull(skip) || Objects.nonNull(limit)) {
-                    // pagination clause should be last.
-                    // limit does not contain field or variable, so do not need to replace alias.
-                    pagination.add(d);
-                    continue;
+            // having sub query, sub query will be in the highest priority
+            if (!emptySubQueryBaseAlias) {
+                result.add(new Document(PROJECT, new Document(Map.of(subQueryAlias, ROOT, MONGO_ID, 0))));
+            }
+            Document subQuery = subQueryMap.remove(mainTableAlias);
+            List<Document> tempSubQueryAggregateList = subQuery.getList(UNDERLINE, Document.class);
+            // transform data of sub query to match outer alias of sub query
+            List<Document> subQueryAggregateList = new ArrayList<>();
+            for (Document document : tempSubQueryAggregateList) {
+                Document project = document.get(PROJECT, Document.class);
+                if (Objects.nonNull(project)) {
+                    Document newProject = new Document();
+                    for (Map.Entry<String, Object> entry : project.entrySet()) {
+                        String fieldName = entry.getKey();
+                        if (!emptySubQueryBaseAlias && fieldName.startsWith(subQueryAlias + DOT)) {
+                            // remove sub query base alias
+                            fieldName = fieldName.replaceFirst(subQueryAlias + DOT, EMPTY_STRING);
+                        }
+                        // add sub query alias
+                        String newFieldName = mainTableAlias + DOT + fieldName;
+                        newProject.put(newFieldName, entry.getValue());
+                    }
+                    subQueryAggregateList.add(new Document(PROJECT, newProject));
+                } else {
+                    subQueryAggregateList.add(document);
                 }
-                // for sub query, it must be the pipeline of lookup document and $$ROOT has been used by top level
-                // at this time, alias can not be recognized, so remove it.
-                // table alias contains two part:
-                // 1.field eg: $alias.field
-                // 2.variable eg: alias_field, it is no need to handle it.
-                Document aliasRemovedDocument = removeAliasForSubQueryDocument(d, baseAlias);
-                partialAggregateList.add(aliasRemovedDocument);
             }
-            List<Document> aggregateList = new ArrayList<>();
-            // add sub query aggregation.
-            aggregateList.addAll(partialAggregateList);
-            // add pagination
-            aggregateList.addAll(pagination);
-            result.addAll(aggregateList);
-            result.add(document);
+            result.addAll(subQueryAggregateList);
+            result.addAll(rootAggregateList);
         }
-    }
-
-    private Document removeAliasForSubQueryDocument(Document d, String baseAlias) {
-        if (StringUtils.isEmpty(baseAlias)) {
-            return d;
-        }
-        return Document.parse(
-                d.toJson()
-                        .replace(DOLLAR + baseAlias + DOT, DOLLAR)
-        );
+        mapping.put(x, new Document(Map.of(UNDERLINE, result, FROM, mainTableName)));
     }
 
     /**
@@ -730,7 +713,7 @@ public class SqlStatementTransformVisitorV32 implements SqlVisitor {
             projectItemMap.putAll(selectTableAliasList.stream().collect(Collectors.toMap(o -> o, s -> 0)));
         }
         if (!projectItemMap.isEmpty()) {
-            result.add(new Document(PROJECT, projectItemMap));
+            result.add(new Document(PROJECT, new Document(projectItemMap)));
         }
         return result;
     }
@@ -766,13 +749,22 @@ public class SqlStatementTransformVisitorV32 implements SqlVisitor {
         left.accept(this);
         SQLTableSource right = x.getRight();
         right.accept(this);
+        boolean rightTableSubQuery = right instanceof SQLSubqueryTableSource;
         SQLJoinTableSource.JoinType joinType = x.getJoinType();
         SQLExpr condition = x.getCondition();
-        condition.putAttribute(RIGHT_TABLE_ALIAS_OF_ON_CONDITION, right.getAlias());
-        condition.putAttribute(ON_CONDITION, right);
-        condition.accept(this);
-        mapping.put(x, generateLookupStep(right, condition));
-        mapping.put(right, generateUnwind(right, joinType));
+        if (rightTableSubQuery) {
+            condition.putAttribute(RIGHT_TABLE_ALIAS_OF_ON_CONDITION, left.getAlias());
+            condition.putAttribute(ON_CONDITION, left);
+            condition.accept(this);
+            mapping.put(x, generateLookupStep(left, condition));
+            mapping.put(right, generateUnwind(left, joinType));
+        } else {
+            condition.putAttribute(RIGHT_TABLE_ALIAS_OF_ON_CONDITION, right.getAlias());
+            condition.putAttribute(ON_CONDITION, right);
+            condition.accept(this);
+            mapping.put(x, generateLookupStep(right, condition));
+            mapping.put(right, generateUnwind(right, joinType));
+        }
         return false;
     }
 
